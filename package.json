@@ -1,8 +1,8 @@
 {
-  "name": "stunmap-console",
+  "name": "stun-nat",
   "version": "1.0.0",
   "private": true,
-  "description": "Rule-driven NAT1 STUN port mapping console",
+  "description": "Rule-driven STUN port mapping console",
   "type": "module",
   "scripts": {
     "start": "node server.js",

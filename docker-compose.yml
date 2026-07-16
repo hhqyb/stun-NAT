@@ -1,7 +1,7 @@
 services:
-  stunmap:
+  stun-nat:
     build: .
-    container_name: stunmap
+    container_name: stun-nat
     network_mode: host
     cap_add:
       - NET_ADMIN

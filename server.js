@@ -33,7 +33,7 @@ function basicAuth(req, res) {
   const sameLength = encoded.length === expected.length;
   const valid = sameLength && crypto.timingSafeEqual(Buffer.from(encoded), Buffer.from(expected));
   if (valid) return true;
-  res.writeHead(401, { 'www-authenticate': 'Basic realm="STUNMap Console"' });
+  res.writeHead(401, { 'www-authenticate': 'Basic realm="STUN-NAT Console"' });
   res.end('Authentication required');
   return false;
 }
@@ -295,7 +295,7 @@ async function reconcileRouterMappings() {
     runner.ensureFirewallRule(state.privatePort);
     const fingerprint = `${state.privatePort}:${runner.rule.routerMapping}:${runner.rule.protocol}`;
     if (runner.rule.routerMapping !== 'none' && runner.routerFingerprint !== fingerprint) try {
-      const result = runner.rule.routerMapping === 'nat-pmp' ? await natPmpMap(runner.rule.protocol, state.privatePort) : await upnpMap(runner.rule.protocol, state.privatePort, `STUNMap ${runner.rule.name}`);
+      const result = runner.rule.routerMapping === 'nat-pmp' ? await natPmpMap(runner.rule.protocol, state.privatePort) : await upnpMap(runner.rule.protocol, state.privatePort, `STUN-NAT ${runner.rule.name}`);
       runner.routerFingerprint = fingerprint; const sameWan = !result.externalAddress || result.externalAddress === state.publicAddress;
       runner.routerState = { type: runner.rule.routerMapping, externalAddress: result.externalAddress || null, externalPort: result.externalPort, matchesStunAddress: sameWan, verifiedAt: new Date().toISOString() };
       runner.log('info', `${runner.rule.routerMapping.toUpperCase()} 映射成功，路由 WAN ${result.externalAddress || '未知'}，外部端口 ${result.externalPort}${sameWan ? '' : '；与 STUN 地址不一致，存在上游 NAT'}`);
@@ -334,5 +334,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 await ensureStorage(); await refreshRunners(); setInterval(reconcileRouterMappings, 1000).unref();
-server.listen(port, '0.0.0.0', () => console.log(`STUNMap Console listening on :${port}`));
+server.listen(port, '0.0.0.0', () => console.log(`STUN-NAT Console listening on :${port}`));
 process.on('SIGTERM', () => { for (const runner of runners.values()) runner.stop(); server.close(() => process.exit(0)); });

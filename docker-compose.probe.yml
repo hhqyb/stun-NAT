@@ -1,6 +1,7 @@
 services:
-  stunmap-probe:
+  stun-nat-probe:
     build: .
+    container_name: stun-nat-probe
     command: ["node", "probe-server.js"]
     network_mode: host
     environment:
