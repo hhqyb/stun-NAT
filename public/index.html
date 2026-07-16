@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>STUNMap Console</title>
+    <link rel="stylesheet" href="/app.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div><strong>STUNMap</strong><span> NAT1 动态端口穿透</span></div>
+      <div id="summary">加载中</div>
+    </header>
+    <main>
+      <section class="toolbar"><div><h1>穿透规则</h1><p>公网端口由 NAT 运行状态决定，不能指定或固定。</p></div><button id="newRule">添加规则</button></section>
+      <section id="empty" class="empty" hidden><h2>尚未创建穿透规则</h2><p>创建后，系统会在本机绑定通道端口，持续获取公网映射并按配置转发流量。</p></section>
+      <section id="rules" class="rules"></section>
+    </main>
+    <dialog id="editor">
+      <form id="ruleForm" method="dialog">
+        <header><h2 id="dialogTitle">添加穿透规则</h2><button type="button" class="icon" id="closeEditor" title="关闭">×</button></header>
+        <input type="hidden" name="id">
+        <div class="form-grid">
+          <label>规则名称<input name="name" required maxlength="80" placeholder="例如：家庭 Web 服务"></label>
+          <label>操作模式<select id="viewMode"><option value="simple">简易模式</option><option value="advanced">定制模式</option></select><small>简易模式采用推荐参数；定制模式显示全部选项。</small></label>
+          <label>穿透类型<select name="protocol"><option value="tcp">IPv4 TCP</option><option value="udp">IPv4 UDP</option></select></label>
+          <label>通道监听端口<input name="bindPort" type="number" min="0" max="65535" value="0"><small>填 0 时自动选择随机端口；局域网内应避免冲突。</small></label>
+          <label class="advanced">STUN 服务器<input name="stunServer" required value="turn.cloudflare.com:3478"></label>
+          <label class="tcp-only advanced">TCP 保活服务器<input name="keepaliveServer" value="www.cloudflare.com:80"><small>TCP 规则须保持此连接，以维持 NAT 映射。</small></label>
+          <label class="advanced">保活间隔（秒）<input name="interval" type="number" min="5" max="3600" value="10"></label>
+          <label class="advanced">UDP STUN 检测周期<input name="checkEvery" type="number" min="1" max="3600" value="1"><small>每 N 次保活后重新探测映射。</small></label>
+          <label>转发模式<select name="mode" id="mode"><option value="forward">Lucky 内置转发</option><option value="bind">路由器直转（bind）</option></select></label>
+          <label class="advanced">上级路由映射<select name="routerMapping"><option value="none">不使用</option><option value="nat-pmp">NAT-PMP</option><option value="upnp">UPnP IGD</option></select><small>Lucky 不在主路由时使用，路由器须启用对应协议。</small></label>
+          <label class="wide advanced">公网探针地址<input name="externalProbeUrl" placeholder="https://probe.example.com/probe"><small>部署在公网 VPS 的 STUNMap Probe。留空时仅使用本地 STUN/保活心跳。</small></label>
+          <label class="advanced">公网探针令牌<input name="externalProbeToken" type="password" autocomplete="new-password"></label>
+          <label class="advanced">公网探针间隔（秒）<input name="probeInterval" type="number" min="5" max="3600" value="10"></label>
+          <label class="wide advanced">映射 Webhook 地址<input name="webhookUrl" placeholder="https://example.com/hooks/stunmap"><small>首次映射成功或 IP/端口变化后调用。心跳不会重复触发。</small></label>
+          <label class="advanced">Webhook 方法<select name="webhookMethod"><option value="post">POST JSON</option><option value="get">GET 查询参数</option></select></label>
+          <label class="wide advanced webhook-body">Webhook POST JSON 模板<textarea name="webhookBody" spellcheck="false" placeholder='{"public_ip":"{{STUN_PUBLIC_IP}}","public_port":{{STUN_PUBLIC_PORT}},"public_addr":"{{STUN_PUBLIC_ADDR}}"}'></textarea><small>可用变量：STUN_PUBLIC_IP、STUN_PUBLIC_PORT、STUN_PUBLIC_ADDR、STUN_PRIVATE_IP、STUN_PRIVATE_PORT、STUN_PRIVATE_ADDR、STUN_IP4P、STUN_PROTOCOL、STUN_RULE_ID、STUN_RULE_NAME、STUN_ROUTER_IP、STUN_ROUTER_PORT。支持双花括号、美元花括号或单花括号写法。</small></label>
+          <label class="target">目标地址<input name="targetHost" placeholder="192.168.1.20 或 nas.lan"></label>
+          <label class="target">目标端口<input name="targetPort" type="number" min="1" max="65535" placeholder="443"></label>
+          <label class="checkbox wide advanced"><input name="firewallAuto" type="checkbox"> Linux 主路由上自动放行本规则的防火墙端口</label>
+          <label class="wide advanced">防火墙备注<input name="firewallNote" placeholder="例如：已放行 WAN TCP 端口；或记录路由器 DNAT 规则"></label>
+          <label class="checkbox wide"><input name="enabled" type="checkbox" checked> 保存后立即启用</label>
+        </div>
+        <footer><button type="button" class="secondary" id="cancelEditor">取消</button><button type="submit">保存规则</button></footer>
+      </form>
+    </dialog>
+    <template id="ruleTemplate">
+      <article class="rule">
+        <header><div><h2 class="name"></h2><p class="meta"></p></div><div class="actions"><button class="toggle"></button><button class="secondary edit">编辑</button><button class="danger delete">删除</button></div></header>
+        <div class="mapping"></div>
+        <div class="details"></div>
+        <details><summary>规则日志</summary><pre class="logs"></pre></details>
+      </article>
+    </template>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

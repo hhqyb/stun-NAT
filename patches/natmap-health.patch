@@ -1,0 +1,113 @@
+diff --git a/src/hev-exec.c b/src/hev-exec.c
+index 5cabb76..6f81560 100644
+--- a/src/hev-exec.c
++++ b/src/hev-exec.c
+@@ -7,6 +7,7 @@
+ 
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <string.h>
+ #include <signal.h>
+ #include <unistd.h>
+ #include <sys/wait.h>
+@@ -30,6 +30,11 @@ static char iaddr[INET6_ADDRSTRLEN];
+ static char oport[32];
+ static char iport[32];
+ static char ip4p[32];
++static unsigned int last_maddr[4];
++static unsigned int last_baddr[4];
++static unsigned short last_mport;
++static unsigned short last_bport;
++static int last_family;
+ 
+ static void
+ signal_handler (int signum)
+@@ -73,6 +78,12 @@ hev_exec_run (int family, unsigned int maddr[4], unsigned short mport,
+     path = hev_conf_path ();
+     signal (SIGCHLD, signal_handler);
+ 
++    last_family = family;
++    memcpy (last_maddr, maddr, sizeof (last_maddr));
++    memcpy (last_baddr, baddr, sizeof (last_baddr));
++    last_mport = mport;
++    last_bport = bport;
++
+     q = (unsigned char *)maddr;
+     p = (unsigned char *)&mport;
+ 
+@@ -113,3 +124,11 @@ hev_exec_run (int family, unsigned int maddr[4], unsigned short mport,
+     hev_exec_fork_exec (&call);
+ #endif
+ }
++
++void
++hev_exec_ping (void)
++{
++    if (last_family)
++        hev_exec_run (last_family, last_maddr, last_mport, last_baddr,
++                      last_bport);
++}
+diff --git a/src/hev-exec.h b/src/hev-exec.h
+index dcbaee4..ed62b58 100644
+--- a/src/hev-exec.h
++++ b/src/hev-exec.h
+@@ -36,4 +36,6 @@ void hev_exec_init (void *stack);
+ void hev_exec_run (int family, unsigned int maddr[4], unsigned short mport,
+                    unsigned int baddr[4], unsigned short bport);
+ 
++void hev_exec_ping (void);
++
+ #endif /* __HEV_EXEC_H__ */
+diff --git a/src/hev-stun.c b/src/hev-stun.c
+index 2916b72..de8cc3b 100644
+--- a/src/hev-stun.c
++++ b/src/hev-stun.c
+@@ -273,10 +273,10 @@ stun_bind (int fd, int mode, unsigned int baddr[4], int bport)
+     handler ();
+ 
+     exec = cmp_addr (family, maddr, mport, baddr, bport);
+-    if (exec) {
++    if (exec)
+         hev_conf_mport (ntohs (mport));
+-        hev_exec_run (family, maddr, mport, baddr, bport);
+-    }
++
++    hev_exec_run (family, maddr, mport, baddr, bport);
+ 
+     return 0;
+ }
+diff --git a/src/hev-tnsk.c b/src/hev-tnsk.c
+index a191c70..a4b4d7b 100644
+--- a/src/hev-tnsk.c
++++ b/src/hev-tnsk.c
+@@ -19,6 +19,7 @@
+ #include "hev-misc.h"
+ #include "hev-sock.h"
+ #include "hev-stun.h"
++#include "hev-exec.h"
+ #include "hev-tfwd.h"
+ #include "hev-xnsk.h"
+ 
+@@ -67,6 +68,7 @@ tnsk_keep_alive (int fd, const char *http)
+             } else if (res <= 0) {
+                 return;
+             } else {
++                hev_exec_ping ();
+                 misscnt = 0;
+             }
+         }
+diff --git a/src/hev-ufwd.c b/src/hev-ufwd.c
+index 9c5a226..a1d0303 100644
+--- a/src/hev-ufwd.c
++++ b/src/hev-ufwd.c
+@@ -222,6 +222,11 @@ server_task_entry (void *data)
+             break;
+         }
+ 
++        if ((len >= 5) && !memcmp (buf, "SMHP:", 5)) {
++            sendto (sfd, buf, len, 0, pa, alen);
++            continue;
++        }
++
+         s = session_find (pa, alen);
+         if (!s) {

@@ -1,0 +1,14 @@
+services:
+  stunmap:
+    build: .
+    container_name: stunmap
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    environment:
+      PORT: "16888"
+      STUNMAP_ADMIN_USER: "${STUNMAP_ADMIN_USER:-admin}"
+      STUNMAP_ADMIN_PASSWORD: "${STUNMAP_ADMIN_PASSWORD:?set a strong admin password}"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

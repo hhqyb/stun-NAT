@@ -1,0 +1,9 @@
+services:
+  stunmap-probe:
+    build: .
+    command: ["node", "probe-server.js"]
+    network_mode: host
+    environment:
+      PROBE_PORT: "16900"
+      STUNMAP_PROBE_TOKEN: "${STUNMAP_PROBE_TOKEN:?set a long random probe token}"
+    restart: unless-stopped

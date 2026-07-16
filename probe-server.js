@@ -1,0 +1,14 @@
+import crypto from 'node:crypto';
+import dgram from 'node:dgram';
+import http from 'node:http';
+import net from 'node:net';
+
+const port = Number(process.env.PROBE_PORT || 16900);
+const token = process.env.STUNMAP_PROBE_TOKEN || '';
+if (!token) throw new Error('必须设置 STUNMAP_PROBE_TOKEN');
+
+function sameToken(value) { const input = Buffer.from(String(value || '')); const expected = Buffer.from(token); return input.length === expected.length && crypto.timingSafeEqual(input, expected); }
+function tcpProbe(address, probePort) { return new Promise((resolve) => { const socket = net.connect({ host: address, port: probePort }); const timer = setTimeout(() => { socket.destroy(); resolve(false); }, 4000); socket.once('connect', () => { clearTimeout(timer); socket.destroy(); resolve(true); }); socket.once('error', () => { clearTimeout(timer); resolve(false); }); }); }
+function udpProbe(address, probePort) { return new Promise((resolve) => { const socket = dgram.createSocket('udp4'); const payload = Buffer.from(`SMHP:${token}:${crypto.randomUUID()}`); const timer = setTimeout(() => { socket.close(); resolve(false); }, 4000); socket.on('message', (message) => { clearTimeout(timer); socket.close(); resolve(message.length === payload.length && crypto.timingSafeEqual(message, payload)); }); socket.on('error', () => { clearTimeout(timer); socket.close(); resolve(false); }); socket.send(payload, probePort, address); }); }
+async function body(req) { const chunks=[]; for await (const chunk of req) chunks.push(chunk); return JSON.parse(Buffer.concat(chunks).toString() || '{}'); }
+http.createServer(async (req, res) => { if (req.method !== 'POST' || req.url !== '/probe') { res.writeHead(404); return res.end(); } try { const input=await body(req); if (!sameToken(input.token)) { res.writeHead(403); return res.end(JSON.stringify({ error:'invalid token' })); } if (!['tcp','udp'].includes(input.protocol) || !Number.isInteger(input.port) || input.port < 1 || input.port > 65535 || !net.isIPv4(input.address)) throw new Error('invalid probe request'); const reachable = input.protocol === 'tcp' ? await tcpProbe(input.address, input.port) : await udpProbe(input.address, input.port); res.writeHead(200, { 'content-type':'application/json' }); res.end(JSON.stringify({ reachable, checkedAt:new Date().toISOString() })); } catch (error) { res.writeHead(400, { 'content-type':'application/json' }); res.end(JSON.stringify({ error:error.message })); } }).listen(port, '0.0.0.0', () => console.log(`STUNMap Probe listening on :${port}`));
