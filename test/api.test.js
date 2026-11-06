@@ -56,3 +56,30 @@ test('keeps the console available when an enabled mapping engine cannot start', 
   const rule = rules.find((item) => item.name === 'engine-error');
   assert.ok(rule.logs.some((entry) => entry.level === 'error'));
 });
+
+test('defaults new rules to UPnP without overriding explicit none or NAT-PMP on edits', async () => {
+  const created = await request('/api/rules', { method: 'POST', body: JSON.stringify({ name: 'default-upnp', enabled: false, targetHost: '192.168.1.20', targetPort: 443 }) });
+  assert.equal(created.status, 201);
+  const { rule } = await created.json();
+  assert.equal(rule.routerMapping, 'upnp');
+  for (const routerMapping of ['none', 'nat-pmp']) {
+    const changed = await request(`/api/rules/${rule.id}`, { method: 'PUT', body: JSON.stringify({ routerMapping }) });
+    assert.equal((await changed.json()).rule.routerMapping, routerMapping);
+    const edited = await request(`/api/rules/${rule.id}`, { method: 'PUT', body: JSON.stringify({ targetPort: 8443 }) });
+    assert.equal((await edited.json()).rule.routerMapping, routerMapping);
+  }
+});
+
+test('API and persisted logs have stable IDs and explicit UTC+8 timestamps', async () => {
+  const { rules } = await (await request('/api/rules')).json();
+  const rule = rules.find((item) => item.name === 'engine-error');
+  assert.ok(rule.logs.length);
+  assert.equal(new Set(rule.logs.map((entry) => entry.id)).size, rule.logs.length);
+  for (const entry of rule.logs) {
+    assert.match(entry.id, /^[0-9a-f-]+$/);
+    assert.match(entry.at, /\+08:00$/);
+    assert.ok(Number.isFinite(Date.parse(entry.at)));
+  }
+  const log = await fs.readFile(path.join(directory, 'logs', `${rule.id}.log`), 'utf8');
+  assert.match(log, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}\+08:00 /);
+});

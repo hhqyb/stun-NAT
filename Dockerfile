@@ -14,6 +14,7 @@ RUN apk add --no-cache iptables libstdc++
 WORKDIR /app
 COPY --from=natmap-build /build/bin/natmap /usr/local/bin/natmap
 COPY package.json server.js probe-server.js ./
+COPY lib ./lib
 COPY scripts ./scripts
 COPY public ./public
 RUN chmod 0755 /app/scripts/notify.js \

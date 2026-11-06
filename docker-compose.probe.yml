@@ -7,4 +7,9 @@ services:
     environment:
       PROBE_PORT: "16900"
       STUNMAP_PROBE_TOKEN: "${STUNMAP_PROBE_TOKEN:?set a long random probe token}"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped

@@ -30,7 +30,7 @@
           <label class="advanced">保活间隔（秒）<input name="interval" type="number" min="5" max="3600" value="10"></label>
           <label class="advanced">UDP STUN 检测周期<input name="checkEvery" type="number" min="1" max="3600" value="1"><small>每 N 次保活后重新探测映射。</small></label>
           <label>转发模式<select name="mode" id="mode"><option value="forward">Lucky 内置转发</option><option value="bind">路由器直转（bind）</option></select></label>
-          <label class="advanced">上级路由映射<select name="routerMapping"><option value="none">不使用</option><option value="nat-pmp">NAT-PMP</option><option value="upnp">UPnP IGD</option></select><small>Lucky 不在主路由时使用，路由器须启用对应协议。</small></label>
+          <label class="advanced">上级路由映射<select name="routerMapping"><option value="upnp" selected>UPnP IGD（默认）</option><option value="none">不使用</option><option value="nat-pmp">NAT-PMP</option></select><small>默认使用 UPnP，路由器须启用 UPnP IGD；运行在主路由上可选择“不使用”。</small></label>
           <label class="wide advanced">公网探针地址<input name="externalProbeUrl" placeholder="https://probe.example.com/probe"><small>部署在公网 VPS 的 STUNMap Probe。留空时仅使用本地 STUN/保活心跳。</small></label>
           <label class="advanced">公网探针令牌<input name="externalProbeToken" type="password" autocomplete="new-password"></label>
           <label class="advanced">公网探针间隔（秒）<input name="probeInterval" type="number" min="5" max="3600" value="10"></label>
@@ -51,7 +51,7 @@
         <header><div><h2 class="name"></h2><p class="meta"></p></div><div class="actions"><button class="toggle"></button><button class="secondary edit">编辑</button><button class="danger delete">删除</button></div></header>
         <div class="mapping"></div>
         <div class="details"></div>
-        <details><summary>规则日志</summary><pre class="logs"></pre></details>
+        <details><summary>规则日志</summary><div class="log-toolbar"><small>东八区（UTC+8）</small><button type="button" class="secondary log-latest" disabled>已显示最新日志</button></div><pre class="logs" tabindex="0" aria-label="规则日志（东八区）"></pre></details>
       </article>
     </template>
     <script type="module" src="/app.js"></script>

@@ -7,8 +7,15 @@ services:
       - NET_ADMIN
     environment:
       PORT: "16888"
+      STUNMAP_LOG_MAX_BYTES: "${STUNMAP_LOG_MAX_BYTES:-1073741824}"
+      STUNMAP_LOG_FILE_BYTES: "${STUNMAP_LOG_FILE_BYTES:-}"
       STUNMAP_ADMIN_USER: "${STUNMAP_ADMIN_USER:-admin}"
       STUNMAP_ADMIN_PASSWORD: "${STUNMAP_ADMIN_PASSWORD:?set a strong admin password}"
     volumes:
       - ./data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
