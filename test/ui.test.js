@@ -114,6 +114,14 @@ test('browser: UPnP defaults, UTC+8 and stable log reading through polling', { s
     await evaluate("document.querySelector('#closeEditor').click()");
   });
 
+  await t.test('webhook preset fills the advanced webhook fields', async () => {
+    const preset = await evaluate("document.querySelector('.edit').click(); const select = document.querySelector('#webhookPreset'); select.value = 'telegram'; select.dispatchEvent(new Event('change')); ({ method: document.querySelector('[name=webhookMethod]').value, url: document.querySelector('[name=webhookUrl]').value, body: document.querySelector('[name=webhookBody]').value })");
+    assert.equal(preset.method, 'post');
+    assert.match(preset.url, /api\.telegram\.org/);
+    assert.match(preset.body, /STUN_PUBLIC_ADDR/);
+    await evaluate("document.querySelector('#closeEditor').click()");
+  });
+
   await evaluate("window.card = document.querySelector('.rule'); window.log = card.querySelector('.logs'); window.logDetails = card.querySelector('details'); logDetails.open = true;");
   await waitFor('log.clientHeight > 0 && log.scrollHeight - log.clientHeight - log.scrollTop <= 2');
   assert.match(await evaluate('log.textContent'), /2026-11-06T10:34:01\.391\+08:00/);

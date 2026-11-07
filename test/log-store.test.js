@@ -34,6 +34,25 @@ test('rotates before crossing the segment limit and preserves complete records',
   assert.equal(store.totalBytes, total(dir));
 });
 
+test('lists and removes all log files belonging to one rule', (t) => {
+  const dir = directory(t);
+  const store = new RotatingLogStore(dir, { maxTotalBytes: 4096, maxFileBytes: 64 });
+  store.append('one', `${'a'.repeat(40)}\n`);
+  store.append('one', `${'b'.repeat(40)}\n`);
+  store.append('two', 'other\n');
+  const listed = store.listRule('one');
+  assert.equal(listed.length, 2);
+  assert.equal(listed[0].name, 'one.log');
+  assert.equal(listed[0].archive, false);
+  assert.equal(listed[1].archive, true);
+  assert.equal(store.removeRule('one'), 2);
+  assert.deepEqual(store.listRule('one'), []);
+  assert.deepEqual(files(dir).filter((name) => name.startsWith('one.log')), []);
+  assert.equal(store.totalBytes, total(dir));
+  store.append('one', 'again\n');
+  assert.equal(store.listRule('one').length, 1);
+});
+
 test('all rules share one ceiling and rotated history is evicted before active files', (t) => {
   const dir = directory(t);
   const store = new RotatingLogStore(dir, { maxTotalBytes: 192, maxFileBytes: 64 });

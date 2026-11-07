@@ -68,10 +68,12 @@
           <fieldset class="form-section wide advanced">
             <legend>映射 Webhook</legend>
             <div class="section-grid">
+              <label class="wide">快速模板<select id="webhookPreset"><option value="">自定义</option><option value="duckdns">DuckDNS 动态域名</option><option value="telegram">Telegram 通知</option><option value="ntfy">ntfy 通知</option></select><small>选择后填入示例配置，替换其中的大写占位符即可。</small></label>
               <label class="wide">映射 Webhook 地址<span class="input-row"><input name="webhookUrl" placeholder="https://example.com/hooks/stunmap"><button type="button" class="secondary webhook-test" id="testWebhook">测试</button></span><small>首次映射成功或 IP/端口变化后调用。心跳不会重复触发；测试使用示例映射数据。</small></label>
               <p class="webhook-result wide" id="webhookResult" role="status" hidden></p>
               <label>Webhook 方法<select name="webhookMethod"><option value="post">POST JSON</option><option value="get">GET 查询参数</option></select></label>
               <label class="wide webhook-body">Webhook POST JSON 模板<textarea name="webhookBody" spellcheck="false" placeholder='{"public_ip":"{{STUN_PUBLIC_IP}}","public_port":{{STUN_PUBLIC_PORT}},"public_addr":"{{STUN_PUBLIC_ADDR}}"}'></textarea><small>可用变量：STUN_PUBLIC_IP、STUN_PUBLIC_PORT、STUN_PUBLIC_ADDR、STUN_PRIVATE_IP、STUN_PRIVATE_PORT、STUN_PRIVATE_ADDR、STUN_IP4P、STUN_PROTOCOL、STUN_RULE_ID、STUN_RULE_NAME、STUN_ROUTER_IP、STUN_ROUTER_PORT。支持双花括号、美元花括号或单花括号写法。</small></label>
+              <label class="wide">自定义请求头<textarea name="webhookHeaders" class="headers-input" spellcheck="false" placeholder="Authorization: Bearer YOUR_TOKEN"></textarea><small>每行一个 Name: value；Host、Content-Length 等受控请求头会被拒绝。</small></label>
             </div>
           </fieldset>
           <label class="checkbox wide"><input name="enabled" type="checkbox" checked> 保存后立即启用</label>
@@ -86,13 +88,21 @@
       </div>
       <footer><button type="button" class="secondary" id="confirmCancel">取消</button><button type="button" class="danger" id="confirmOk">确认</button></footer>
     </dialog>
+    <dialog id="filesDialog" class="files-dialog">
+      <div class="confirm-body">
+        <h2>日志文件</h2>
+        <p id="filesHint">加载中…</p>
+      </div>
+      <div class="files-list" id="filesList"></div>
+      <footer><button type="button" class="secondary" id="filesClose">关闭</button><button type="button" class="danger" id="filesClear">清空日志</button></footer>
+    </dialog>
     <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
     <template id="cardTemplate">
       <article class="rule">
         <header><div><h2 class="name"></h2><p class="meta"></p></div><div class="actions"><button class="toggle"></button><button class="secondary edit">编辑</button><button class="secondary copy">复制</button><button class="danger delete">删除</button></div></header>
         <div class="mapping"></div>
         <div class="details"></div>
-        <details class="log-details"><summary>规则日志</summary><div class="log-toolbar"><div class="log-tools"><small>东八区（UTC+8）</small><select class="log-filter" aria-label="日志级别筛选"><option value="all">全部级别</option><option value="info">信息</option><option value="warn">警告</option><option value="error">错误</option></select><input class="log-search" type="search" placeholder="搜索日志" aria-label="搜索日志"></div><div class="log-tools"><button type="button" class="secondary log-download">下载日志</button><button type="button" class="secondary log-latest" disabled>已显示最新日志</button></div></div><pre class="logs" tabindex="0" aria-label="规则日志（东八区）"></pre></details>
+        <details class="log-details"><summary>规则日志</summary><div class="log-toolbar"><div class="log-tools"><small>东八区（UTC+8）</small><select class="log-filter" aria-label="日志级别筛选"><option value="all">全部级别</option><option value="info">信息</option><option value="warn">警告</option><option value="error">错误</option></select><input class="log-search" type="search" placeholder="搜索日志" aria-label="搜索日志"></div><div class="log-tools"><button type="button" class="secondary log-files">日志文件</button><button type="button" class="secondary log-download">下载日志</button><button type="button" class="secondary log-latest" disabled>已显示最新日志</button></div></div><pre class="logs" tabindex="0" aria-label="规则日志（东八区）"></pre></details>
         <details class="history-details"><summary>映射历史</summary><ol class="history" aria-label="最近映射历史"></ol></details>
       </article>
     </template>

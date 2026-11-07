@@ -86,9 +86,12 @@ test('creates, validates, and stops a STUN forwarding rule', async () => {
   assert.equal(udpBind.status, 400);
   const incompleteProbe = await request('/api/rules', { method: 'POST', body: JSON.stringify({ ...body, name: 'incomplete-probe', externalProbeUrl: 'https://probe.example.com/probe' }) });
   assert.equal(incompleteProbe.status, 400);
-  const webhook = await request('/api/rules', { method: 'POST', body: JSON.stringify({ ...body, name: 'webhook-template', webhookUrl: 'https://hooks.example.com/{{STUN_PUBLIC_ADDR}}', webhookMethod: 'post', webhookBody: '{"ip":"{{STUN_PUBLIC_IP}}","port":{{STUN_PUBLIC_PORT}},"name":"{{STUN_RULE_NAME}}"}' }) });
+  const webhook = await request('/api/rules', { method: 'POST', body: JSON.stringify({ ...body, name: 'webhook-template', webhookUrl: 'https://hooks.example.com/{{STUN_PUBLIC_ADDR}}', webhookMethod: 'post', webhookBody: '{"ip":"{{STUN_PUBLIC_IP}}","port":{{STUN_PUBLIC_PORT}},"name":"{{STUN_RULE_NAME}}"}', webhookHeaders: 'Authorization: Bearer abc' }) });
   assert.equal(webhook.status, 201); const webhookRule = (await webhook.json()).rule;
   assert.equal(webhookRule.webhookBody, '{"ip":"{{STUN_PUBLIC_IP}}","port":{{STUN_PUBLIC_PORT}},"name":"{{STUN_RULE_NAME}}"}');
+  assert.equal(webhookRule.webhookHeaders, 'Authorization: Bearer abc');
+  const invalidHeaders = await request('/api/rules', { method: 'POST', body: JSON.stringify({ ...body, name: 'invalid-webhook-headers', webhookUrl: 'https://hooks.example.com', webhookHeaders: 'Host: evil' }) });
+  assert.equal(invalidHeaders.status, 400);
   const invalidWebhookBody = await request('/api/rules', { method: 'POST', body: JSON.stringify({ ...body, name: 'invalid-webhook-template', webhookUrl: 'https://hooks.example.com', webhookMethod: 'post', webhookBody: '{"ip":"{{MISSING_VARIABLE}}"}' }) });
   assert.equal(invalidWebhookBody.status, 400);
   const removed = await request(`/api/rules/${rule.id}`, { method: 'DELETE' });
@@ -160,7 +163,7 @@ test('tests webhook templates against a receiver', async (t) => {
     req.setEncoding('utf8');
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
-      received = { method: req.method, body };
+      received = { method: req.method, body, authorization: req.headers.authorization };
       res.writeHead(202, { 'content-type': 'text/plain' });
       res.end('accepted');
     });
@@ -168,13 +171,32 @@ test('tests webhook templates against a receiver', async (t) => {
   receiver.listen(0, '127.0.0.1'); await once(receiver, 'listening');
   t.after(() => new Promise((resolve) => { receiver.closeAllConnections(); receiver.close(resolve); }));
   const url = `http://127.0.0.1:${receiver.address().port}/hook`;
-  const response = await request('/api/webhook/test', { method: 'POST', body: JSON.stringify({ url, method: 'post', body: '{"ip":"{{STUN_PUBLIC_IP}}","port":{{STUN_PUBLIC_PORT}},"name":"{{STUN_RULE_NAME}}"}' }) });
+  const response = await request('/api/webhook/test', { method: 'POST', body: JSON.stringify({ url, method: 'post', body: '{"ip":"{{STUN_PUBLIC_IP}}","port":{{STUN_PUBLIC_PORT}},"name":"{{STUN_RULE_NAME}}"}', headers: 'Authorization: Bearer test-token' }) });
   assert.equal(response.status, 200);
   const result = await response.json();
   assert.equal(result.ok, true);
   assert.equal(result.status, 202);
   assert.equal(result.response, 'accepted');
-  assert.deepEqual(received, { method: 'POST', body: '{"ip":"203.0.113.10","port":34567,"name":"测试规则"}' });
+  assert.deepEqual(received, { method: 'POST', body: '{"ip":"203.0.113.10","port":34567,"name":"测试规则"}', authorization: 'Bearer test-token' });
+});
+
+test('lists, downloads and clears rule log files', async () => {
+  const { rules } = await (await request('/api/rules')).json();
+  const rule = rules.find((item) => item.name === 'engine-error');
+  const listed = await (await request(`/api/rules/${rule.id}/logs/files`)).json();
+  assert.ok(listed.files.length >= 1);
+  const current = listed.files.find((file) => file.current);
+  assert.equal(current.name, `${rule.id}.log`);
+  const downloaded = await request(`/api/rules/${rule.id}/logs/files/${current.name}`);
+  assert.equal(downloaded.status, 200);
+  assert.match(await downloaded.text(), /启动规则/);
+  const removed = await request(`/api/rules/${rule.id}/logs/files`, { method: 'DELETE' });
+  assert.equal(removed.status, 200);
+  assert.ok((await removed.json()).removed >= 1);
+  const empty = await (await request(`/api/rules/${rule.id}/logs/files`)).json();
+  assert.deepEqual(empty.files, []);
+  const missing = await request(`/api/rules/${rule.id}/logs`);
+  assert.equal(missing.status, 404);
 });
 
 test('exports and imports rule configuration', async () => {

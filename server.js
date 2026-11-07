@@ -175,13 +175,13 @@ function webhookRequest(rule, state, routerState = null) {
   };
   const variables = webhookTemplateValues(rule, state, routerState);
   let url = renderWebhookTemplate(rule.webhookUrl, variables);
-  const options = { method: String(rule.webhookMethod || 'post').toUpperCase(), headers: {} };
+  const options = { method: String(rule.webhookMethod || 'post').toUpperCase(), headers: parseWebhookHeaders(rule.webhookHeaders) };
   if (rule.webhookMethod === 'get') {
     const target = new URL(url);
     for (const [key, value] of Object.entries({ event: payload.event, rule_id: payload.rule.id, rule_name: payload.rule.name, protocol: payload.rule.protocol, public_address: payload.mapping.stunAddress, public_port: String(payload.mapping.stunPort), private_address: payload.mapping.privateAddress, private_port: String(payload.mapping.privatePort), ip4p: payload.mapping.ip4p || '' })) if (!target.searchParams.has(key)) target.searchParams.append(key, value);
     url = target.toString();
   } else {
-    options.headers['content-type'] = 'application/json';
+    if (!options.headers['content-type']) options.headers['content-type'] = 'application/json';
     options.body = rule.webhookBody ? renderWebhookJsonTemplate(rule.webhookBody, variables) : JSON.stringify(payload);
   }
   return { url, options };
@@ -193,7 +193,7 @@ function webhookSampleRequest(input) {
   const webhookMethod = String(input.method || 'post').toLowerCase();
   if (!['get', 'post'].includes(webhookMethod)) throw new Error('Webhook 方法只能是 get 或 post');
   return webhookRequest(
-    { id: 'test-rule', name: '测试规则', protocol: 'tcp', mode: 'forward', webhookUrl, webhookMethod, webhookBody: String(input.body || '') },
+    { id: 'test-rule', name: '测试规则', protocol: 'tcp', mode: 'forward', webhookUrl, webhookMethod, webhookBody: String(input.body || ''), webhookHeaders: String(input.headers || '') },
     { publicAddress: '203.0.113.10', publicPort: 34567, privateAddress: '192.168.1.10', privatePort: 45678, ip4p: '203.0.113.10:34567:192.168.1.10' },
     { externalAddress: '203.0.113.10', externalPort: 34567 }
   );
@@ -210,6 +210,30 @@ async function readResponseSnippet(response, limit = 500) {
     }
   } finally { reader.cancel().catch(() => {}); }
   return text.slice(0, limit);
+}
+
+const webhookHeaderName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const restrictedWebhookHeaders = new Set(['host', 'content-length', 'connection', 'transfer-encoding', 'upgrade', 'expect', 'te', 'trailer', 'proxy-authorization', 'proxy-connection', 'keep-alive']);
+
+function parseWebhookHeaders(text) {
+  const source = String(text || '').trim();
+  const headers = {};
+  if (!source) return headers;
+  if (source.length > 4000) throw new Error('请求头总长度不能超过 4000 字符');
+  const lines = source.split(/\r?\n/).filter((line) => line.trim());
+  if (lines.length > 20) throw new Error('请求头不能超过 20 项');
+  for (const [index, line] of lines.entries()) {
+    const separator = line.indexOf(':');
+    if (separator <= 0) throw new Error(`第 ${index + 1} 行格式应为 Name: value`);
+    const name = line.slice(0, separator).trim();
+    const headerValue = line.slice(separator + 1).trim();
+    if (!webhookHeaderName.test(name)) throw new Error(`第 ${index + 1} 行名称无效：${name}`);
+    if (/[\r\n]/.test(headerValue)) throw new Error(`第 ${index + 1} 行包含非法换行`);
+    if (restrictedWebhookHeaders.has(name.toLowerCase())) throw new Error(`不允许设置 ${name}`);
+    if (Object.hasOwn(headers, name.toLowerCase())) throw new Error(`请求头重复：${name}`);
+    headers[name.toLowerCase()] = headerValue;
+  }
+  return headers;
 }
 
 function validateRule(input, existing = {}) {
@@ -229,6 +253,7 @@ function validateRule(input, existing = {}) {
     webhookUrl: String(value(input, 'webhookUrl', existing.webhookUrl || '')).trim(),
     webhookMethod: String(value(input, 'webhookMethod', existing.webhookMethod || 'post')).toLowerCase(),
     webhookBody: String(value(input, 'webhookBody', existing.webhookBody || '')).trim(),
+    webhookHeaders: String(value(input, 'webhookHeaders', existing.webhookHeaders || '')).trim(),
     mode: String(value(input, 'mode', existing.mode || 'forward')).toLowerCase(),
     targetHost: String(value(input, 'targetHost', existing.targetHost || '')).trim(),
     targetPort: Number(value(input, 'targetPort', existing.targetPort ?? 0)),
@@ -253,6 +278,9 @@ function validateRule(input, existing = {}) {
   if (!['get', 'post'].includes(rule.webhookMethod)) throw new Error('Webhook 方法只能是 get 或 post');
   if (rule.webhookBody && rule.webhookMethod === 'post') {
     try { JSON.parse(renderWebhookJsonTemplate(rule.webhookBody, webhookTestVariables)); } catch (error) { throw new Error(`Webhook POST JSON 模板无效：${error.message}`); }
+  }
+  if (rule.webhookHeaders) {
+    try { parseWebhookHeaders(rule.webhookHeaders); } catch (error) { throw new Error(`Webhook 请求头无效：${error.message}`); }
   }
   if (!['forward', 'bind'].includes(rule.mode)) throw new Error('模式只能是 forward 或 bind');
   if (rule.protocol === 'udp' && rule.mode === 'bind') throw new Error('UDP 穿透不支持 bind 直转模式，必须使用本机代理转发');
@@ -333,7 +361,7 @@ class RuleRunner {
   }
   apply(rule) {
     const previous = this.rule; this.rule = rule;
-    if (previous.webhookUrl !== rule.webhookUrl || previous.webhookMethod !== rule.webhookMethod || previous.webhookBody !== rule.webhookBody) this.lastWebhookKey = '';
+    if (previous.webhookUrl !== rule.webhookUrl || previous.webhookMethod !== rule.webhookMethod || previous.webhookBody !== rule.webhookBody || previous.webhookHeaders !== rule.webhookHeaders) this.lastWebhookKey = '';
     if (previous.externalProbeUrl !== rule.externalProbeUrl || previous.externalProbeToken !== rule.externalProbeToken) {
       this.lastProbeAt = 0; this.probeFailures = 0;
       this.health = { ...this.health, external: rule.externalProbeUrl ? 'waiting' : 'not-configured', externalDetail: undefined, externalVerifiedAt: null };
@@ -432,6 +460,21 @@ async function parseBody(req) {
   try { return JSON.parse(Buffer.concat(chunks).toString() || '{}'); } catch { throw new Error('JSON 格式无效'); }
 }
 
+async function sendLogFile(res, filename, downloadName) {
+  let handle;
+  try { handle = await fsp.open(path.join(logDir, filename), 'r'); } catch { return json(res, 404, { error: '日志文件不存在' }); }
+  const stat = await handle.stat();
+  res.writeHead(200, {
+    'content-type': 'text/plain; charset=utf-8',
+    'content-length': stat.size,
+    'cache-control': 'no-store',
+    'content-disposition': `attachment; filename="${downloadName}"`
+  });
+  const stream = handle.createReadStream();
+  stream.on('error', () => res.destroy());
+  stream.pipe(res);
+}
+
 function staticFile(res, pathname) {
   const target = pathname === '/' ? '/index.html' : pathname;
   const publicRoot = path.join(root, 'public');
@@ -453,7 +496,7 @@ function staticFile(res, pathname) {
 
 const server = http.createServer(async (req, res) => {
   securityHeaders(res);
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`); const match = url.pathname.match(/^\/api\/rules\/([0-9a-f-]+)(?:\/(start|stop))?$/); const logMatch = url.pathname.match(/^\/api\/rules\/([0-9a-f-]+)\/logs$/);
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`); const match = url.pathname.match(/^\/api\/rules\/([0-9a-f-]+)(?:\/(start|stop))?$/); const logMatch = url.pathname.match(/^\/api\/rules\/([0-9a-f-]+)\/logs$/); const logFilesMatch = url.pathname.match(/^\/api\/rules\/([0-9a-f-]+)\/logs\/files(?:\/([A-Za-z0-9_.-]+))?$/);
   try {
     if (req.method === 'GET' && url.pathname === '/healthz') return json(res, 200, { status: 'ok', version: APP_VERSION, uptimeSeconds: Math.round(process.uptime()) });
     if (req.method === 'POST' && url.pathname === '/api/auth/login') {
@@ -524,24 +567,23 @@ const server = http.createServer(async (req, res) => {
       await refreshRunners();
       return json(res, 201, { imported });
     }
+    if (logFilesMatch && req.method === 'GET' && !logFilesMatch[2]) {
+      const ruleId = logFilesMatch[1];
+      const files = logStore.listRule(ruleId).map(({ name, size, modified }) => ({ name, size, modified: new Date(modified).toISOString(), current: name === `${ruleId}.log` }));
+      return json(res, 200, { files });
+    }
+    if (logFilesMatch && req.method === 'GET' && logFilesMatch[2]) {
+      const ruleId = logFilesMatch[1]; const name = logFilesMatch[2];
+      if (!logStore.listRule(ruleId).some((file) => file.name === name)) return json(res, 404, { error: '日志文件不存在' });
+      return sendLogFile(res, name, name);
+    }
+    if (logFilesMatch && req.method === 'DELETE' && !logFilesMatch[2]) {
+      return json(res, 200, { removed: logStore.removeRule(logFilesMatch[1]) });
+    }
     if (logMatch && req.method === 'GET') {
-      const filename = path.join(logDir, `${logMatch[1]}.log`);
-      let handle;
-      try { handle = await fsp.open(filename, 'r'); } catch { return json(res, 404, { error: '日志不存在' }); }
-      const stat = await handle.stat();
-      const database = await loadDatabase();
-      const rule = database.rules.find((item) => item.id === logMatch[1]);
-      const name = `${rule?.name || logMatch[1]}.log`.replace(/[\\/:*?"<>|\r\n]/g, '_');
-      res.writeHead(200, {
-        'content-type': 'text/plain; charset=utf-8',
-        'content-length': stat.size,
-        'cache-control': 'no-store',
-        'content-disposition': `attachment; filename="stun-nat-${logMatch[1]}.log"; filename*=UTF-8''${encodeURIComponent(name)}`
-      });
-      const stream = handle.createReadStream();
-      stream.on('error', () => res.destroy());
-      stream.pipe(res);
-      return;
+      const filename = `${logMatch[1]}.log`;
+      if (!logStore.listRule(logMatch[1]).some((file) => file.name === filename)) return json(res, 404, { error: '日志不存在' });
+      return sendLogFile(res, filename, `stun-nat-${logMatch[1]}.log`);
     }
     if (req.method === 'GET' && url.pathname === '/api/rules') {
       const database = await loadDatabase();

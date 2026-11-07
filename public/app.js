@@ -49,6 +49,8 @@ async function loadSession() {
 
 const toasts = document.querySelector('#toasts');
 const confirmDialog = document.querySelector('#confirmDialog');
+const filesDialog = document.querySelector('#filesDialog');
+let filesRule = null;
 let lastLoadError = '';
 let lastWarning = '';
 
@@ -105,6 +107,23 @@ function applyRuleTemplate(name) {
   setMode();
 }
 
+const webhookPresets = {
+  duckdns: { url: 'https://www.duckdns.org/update?domains=YOUR_DOMAIN&token=YOUR_TOKEN&ip={{STUN_PUBLIC_IP}}', method: 'get', body: '', headers: '' },
+  telegram: { url: 'https://api.telegram.org/botYOUR_BOT_TOKEN/sendMessage', method: 'post', body: '{"chat_id":"YOUR_CHAT_ID","text":"STUN-NAT {{STUN_RULE_NAME}} -> {{STUN_PUBLIC_ADDR}}"}', headers: '' },
+  ntfy: { url: 'https://ntfy.sh', method: 'post', body: '{"topic":"YOUR_TOPIC","title":"STUN-NAT","message":"{{STUN_RULE_NAME}} -> {{STUN_PUBLIC_ADDR}}"}', headers: '' }
+};
+
+function applyWebhookPreset(name) {
+  const preset = webhookPresets[name];
+  if (!preset) return;
+  form.webhookUrl.value = preset.url;
+  form.webhookMethod.value = preset.method;
+  form.webhookBody.value = preset.body;
+  form.webhookHeaders.value = preset.headers;
+  setMode();
+  document.querySelector('#webhookResult').hidden = true;
+}
+
 function setText(element, value) {
   const next = String(value || '—');
   if (element.textContent !== next) element.textContent = next;
@@ -139,6 +158,7 @@ function createCard(rule) {
   const card = { node, rule, fields: [] };
   card.viewer = new LogViewer(node.querySelector('.logs'), node.querySelector('.log-latest'), node.querySelector('.log-filter'), node.querySelector('.log-search'));
   node.querySelector('details').addEventListener('toggle', (event) => { if (event.target.open) card.viewer.reveal(); });
+  node.querySelector('.log-files').addEventListener('click', () => openLogFiles(card.rule));
   node.querySelector('.log-download').addEventListener('click', () => { location.assign(`/api/rules/${card.rule.id}/logs`); });
   node.querySelector('.toggle').addEventListener('click', async () => {
     try {
@@ -170,6 +190,53 @@ function createCard(rule) {
     card.fields.push(value);
   }
   return card;
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+}
+
+async function refreshLogFiles() {
+  const hint = document.querySelector('#filesHint');
+  const list = document.querySelector('#filesList');
+  list.replaceChildren();
+  hint.classList.remove('error');
+  hint.textContent = '加载中…';
+  try {
+    const { files } = await api(`/api/rules/${filesRule.id}/logs/files`);
+    hint.textContent = files.length ? `${filesRule.name} · 共 ${files.length} 个文件` : `${filesRule.name} · 暂无日志文件`;
+    if (!files.length) {
+      const empty = document.createElement('p');
+      empty.className = 'files-empty';
+      empty.textContent = '暂无日志文件';
+      list.append(empty);
+      return;
+    }
+    for (const file of files) {
+      const row = document.createElement('div'); row.className = 'file-row';
+      const meta = document.createElement('div'); meta.className = 'file-meta';
+      const name = document.createElement('span'); name.className = 'file-name'; name.textContent = file.name;
+      const sub = document.createElement('span'); sub.className = 'file-sub';
+      sub.textContent = `${formatBytes(file.size)} · ${localTime(file.modified)}${file.current ? ' · 当前' : ' · 归档'}`;
+      meta.append(name, sub);
+      const download = document.createElement('button');
+      download.type = 'button'; download.className = 'secondary'; download.textContent = '下载';
+      download.addEventListener('click', () => location.assign(`/api/rules/${filesRule.id}/logs/files/${encodeURIComponent(file.name)}`));
+      row.append(meta, download);
+      list.append(row);
+    }
+  } catch (error) {
+    hint.textContent = error.message;
+    hint.classList.add('error');
+  }
+}
+
+function openLogFiles(rule) {
+  filesRule = rule;
+  filesDialog.showModal();
+  refreshLogFiles();
 }
 
 function renderHistory(node, rule) {
@@ -254,6 +321,7 @@ function openEditor(rule = null) {
   document.querySelector('#ruleTemplate').value = '';
   document.querySelector('#templateField').classList.toggle('hidden', Boolean(rule?.id));
   document.querySelector('#webhookResult').hidden = true;
+  document.querySelector('#webhookPreset').value = '';
   form.id.value = rule?.id || '';
   form.name.value = rule?.name || '';
   document.querySelector('#viewMode').value = rule ? 'advanced' : 'simple';
@@ -269,6 +337,7 @@ function openEditor(rule = null) {
   form.webhookUrl.value = rule?.webhookUrl || '';
   form.webhookMethod.value = rule?.webhookMethod || 'post';
   form.webhookBody.value = rule?.webhookBody || '';
+  form.webhookHeaders.value = rule?.webhookHeaders || '';
   form.mode.value = rule?.mode || 'forward';
   form.targetHost.value = rule?.targetHost || '';
   form.targetPort.value = rule?.targetPort || '';
@@ -300,6 +369,22 @@ document.querySelector('#importFile').addEventListener('change', async (event) =
   finally { input.value = ''; }
 });
 document.querySelector('#ruleTemplate').addEventListener('change', (event) => applyRuleTemplate(event.target.value));
+document.querySelector('#webhookPreset').addEventListener('change', (event) => applyWebhookPreset(event.target.value));
+document.querySelector('#filesClose').addEventListener('click', () => filesDialog.close());
+document.querySelector('#filesClear').addEventListener('click', async () => {
+  if (!filesRule) return;
+  if (!(await askConfirm(`清空规则“${filesRule.name}”的所有日志文件？历史归档和当前日志都会被删除。`))) return;
+  try {
+    const result = await api(`/api/rules/${filesRule.id}/logs/files`, { method: 'DELETE' });
+    await refreshLogFiles();
+    const hint = document.querySelector('#filesHint');
+    hint.textContent = `已删除 ${result.removed} 个日志文件`;
+  } catch (error) {
+    const hint = document.querySelector('#filesHint');
+    hint.textContent = error.message;
+    hint.classList.add('error');
+  }
+});
 document.querySelector('#testWebhook').addEventListener('click', async (event) => {
   const button = event.currentTarget;
   const label = button.textContent;
@@ -307,7 +392,7 @@ document.querySelector('#testWebhook').addEventListener('click', async (event) =
   button.disabled = true; button.textContent = '测试中…';
   result.hidden = true;
   try {
-    const response = await api('/api/webhook/test', { method: 'POST', body: JSON.stringify({ url: form.webhookUrl.value.trim(), method: form.webhookMethod.value, body: form.webhookBody.value }) });
+    const response = await api('/api/webhook/test', { method: 'POST', body: JSON.stringify({ url: form.webhookUrl.value.trim(), method: form.webhookMethod.value, body: form.webhookBody.value, headers: form.webhookHeaders.value }) });
     const snippet = String(response.response || '').trim().slice(0, 200);
     result.textContent = `HTTP ${response.status}${snippet ? `：${snippet}` : ''}`;
     result.classList.toggle('error', !response.ok);
@@ -321,7 +406,7 @@ document.querySelector('#testWebhook').addEventListener('click', async (event) =
     button.textContent = label;
   }
 });
-for (const field of [form.webhookUrl, form.webhookBody]) field.addEventListener('input', () => { document.querySelector('#webhookResult').hidden = true; });
+for (const field of [form.webhookUrl, form.webhookBody, form.webhookHeaders]) field.addEventListener('input', () => { document.querySelector('#webhookResult').hidden = true; });
 form.webhookMethod.addEventListener('change', () => { document.querySelector('#webhookResult').hidden = true; });
 document.querySelector('#closeEditor').addEventListener('click', () => editor.close());
 document.querySelector('#cancelEditor').addEventListener('click', () => editor.close());
