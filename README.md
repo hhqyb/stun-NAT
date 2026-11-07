@@ -21,7 +21,8 @@
 - Linux `iptables` 自动放行通道端口（每条规则可选）。
 - 每条规则保存动态公网地址、端口、IP4P 地址、本地端口、运行状态和日志。
 - 日志统一使用东八区时间，刷新时保留阅读位置；所有规则的磁盘日志合计最多 1 GiB，自动轮转。
-- 日志面板支持按级别筛选与下载当前日志；规则卡片展示本次运行内最近 20 次公网映射变化。
+- 新建规则可使用 Web / NAS / SSH / 游戏模板；支持复制规则以及 JSON 配置的导出、导入。
+- 日志面板支持按级别筛选、关键字搜索与下载当前日志；规则卡片展示本次运行内最近 20 次公网映射变化。
 - 规则轮询使用 ETag，内容未变化时返回 304，减少远程访问与被控设备的流量。
 - 控制台跟随系统深色模式；登录页保持独立的深色视觉。
 - 支持将状态文件用于 DDNS：`data/state/<规则 ID>.json`。
@@ -103,12 +104,14 @@ docker compose -f docker-compose.probe.yml up -d --build
 
 ## 映射 Webhook
 
-在规则“定制模式”设置 Webhook 地址和方法。首次获取映射、或 STUN 地址/端口变化时会触发一次；每次正常心跳不会重复调用。Webhook 地址和 POST JSON 模板均可使用变量，写法支持 `{{STUN_PUBLIC_IP}}`、`${STUN_PUBLIC_IP}` 或 `{STUN_PUBLIC_IP}`。
+在规则“定制模式”设置 Webhook 地址和方法。首次获取映射、或 STUN 地址/端口变化时会触发一次；每次正常心跳不会重复调用。编辑页的「测试」按钮会使用示例映射数据立即调用一次，结果显示在表单内。Webhook 地址和 POST JSON 模板均可使用变量，写法支持 `{{STUN_PUBLIC_IP}}`、`${STUN_PUBLIC_IP}` 或 `{STUN_PUBLIC_IP}`。
 
 - `POST`：可填写 JSON 模板；为空时发送默认 JSON，包含 `event`、规则信息、STUN 映射、本地通道和路由器映射状态。示例：`{"ip":"{{STUN_PUBLIC_IP}}","port":{{STUN_PUBLIC_PORT}},"address":"{{STUN_PUBLIC_ADDR}}"}`。
 - `GET`：URL 中可直接使用变量，并自动补充 `event`、`rule_id`、`rule_name`、`protocol`、`public_address`、`public_port`、`private_address`、`private_port`、`ip4p` 查询参数；URL 中已明确提供的同名参数不会被覆盖。
 
 变量列表：`STUN_PUBLIC_IP`、`STUN_PUBLIC_PORT`、`STUN_PUBLIC_ADDR`、`STUN_PRIVATE_IP`、`STUN_PRIVATE_PORT`、`STUN_PRIVATE_ADDR`、`STUN_IP4P`、`STUN_PROTOCOL`、`STUN_RULE_ID`、`STUN_RULE_NAME`、`STUN_ROUTER_IP`、`STUN_ROUTER_PORT`。JSON 模板中字符串变量应放在双引号内；端口变量可直接作为数值填写。
+
+规则导出文件包含探针令牌、Webhook 模板等敏感配置（不含运行日志和当前映射状态），请妥善保管；导入时不保留原规则 ID，并会整体校验名称冲突和参数有效性。
 
 ## 环境要求
 
@@ -159,4 +162,4 @@ STUNMAP_ADMIN_PASSWORD=dev-password npm test
 STUNMAP_ADMIN_PASSWORD=dev-password NATMAP_BIN=/path/to/natmap npm start
 ```
 
-测试覆盖认证、规则校验、热更新不重启、规则库损坏备份、并发写串行化、健康检查、ETag/304、日志下载、UPnP 默认值及显式配置保留、创建/停止/删除、东八区日志时间、跨规则日志轮转与总上限、UPnP 发现与响应兼容、源地址选择、超时、请求串行化、退避、续约及取消。未设置 `NATMAP_BIN` 时会跳过两项真实引擎转发测试。浏览器回归会自动寻找常见位置的 Chrome/Chromium，也可设置 `CHROME_BIN=/path/to/chrome`，检查展开日志、滚动、选区、焦点、暂停/恢复跟随及编辑默认值；没有浏览器时仅跳过该项。真实公网 NAT 映射还必须在目标网络中验证，不能以本机回环结果代替。
+测试覆盖认证、规则校验、热更新不重启、规则库损坏备份、并发写串行化、健康检查、ETag/304、日志下载与筛选、规则导入导出、Webhook 测试、模板与复制、UPnP 默认值及显式配置保留、创建/停止/删除、东八区日志时间、跨规则日志轮转与总上限、UPnP 发现与响应兼容、源地址选择、超时、请求串行化、退避、续约及取消。未设置 `NATMAP_BIN` 时会跳过两项真实引擎转发测试。浏览器回归会自动寻找常见位置的 Chrome/Chromium，也可设置 `CHROME_BIN=/path/to/chrome`，检查展开日志、滚动、选区、焦点、暂停/恢复跟随及编辑默认值；没有浏览器时仅跳过该项。真实公网 NAT 映射还必须在目标网络中验证，不能以本机回环结果代替。

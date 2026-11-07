@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { APP_VERSION } from '../public/version.js';
@@ -149,6 +151,53 @@ test('downloads the current rule log', async () => {
   assert.match(response.headers.get('content-type'), /text\/plain/);
   assert.match(response.headers.get('content-disposition'), /attachment/);
   assert.match(await response.text(), /启动规则/);
+});
+
+test('tests webhook templates against a receiver', async (t) => {
+  let received;
+  const receiver = http.createServer((req, res) => {
+    let body = '';
+    req.setEncoding('utf8');
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      received = { method: req.method, body };
+      res.writeHead(202, { 'content-type': 'text/plain' });
+      res.end('accepted');
+    });
+  });
+  receiver.listen(0, '127.0.0.1'); await once(receiver, 'listening');
+  t.after(() => new Promise((resolve) => { receiver.closeAllConnections(); receiver.close(resolve); }));
+  const url = `http://127.0.0.1:${receiver.address().port}/hook`;
+  const response = await request('/api/webhook/test', { method: 'POST', body: JSON.stringify({ url, method: 'post', body: '{"ip":"{{STUN_PUBLIC_IP}}","port":{{STUN_PUBLIC_PORT}},"name":"{{STUN_RULE_NAME}}"}' }) });
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 202);
+  assert.equal(result.response, 'accepted');
+  assert.deepEqual(received, { method: 'POST', body: '{"ip":"203.0.113.10","port":34567,"name":"测试规则"}' });
+});
+
+test('exports and imports rule configuration', async () => {
+  const exported = await request('/api/rules/export');
+  assert.equal(exported.status, 200);
+  assert.match(exported.headers.get('content-disposition'), /attachment/);
+  const payload = await exported.json();
+  assert.ok(Array.isArray(payload.rules));
+  assert.ok(payload.rules.length > 0);
+  assert.ok(payload.rules.every((rule) => rule.id === undefined));
+  const imported = [
+    { name: 'import-a', enabled: false, protocol: 'tcp', stunServer: 'turn.cloudflare.com:3478', keepaliveServer: 'www.cloudflare.com:80', interval: 30, checkEvery: 10, mode: 'forward', targetHost: '192.168.1.40', targetPort: 443, routerMapping: 'none' },
+    { name: 'import-b', enabled: false, protocol: 'udp', stunServer: 'turn.cloudflare.com:3478', interval: 10, checkEvery: 2, mode: 'forward', targetHost: '192.168.1.41', targetPort: 25565, routerMapping: 'none' }
+  ];
+  const response = await request('/api/rules/import', { method: 'POST', body: JSON.stringify({ rules: imported }) });
+  assert.equal(response.status, 201);
+  assert.equal((await response.json()).imported, 2);
+  const duplicate = await request('/api/rules/import', { method: 'POST', body: JSON.stringify({ rules: imported }) });
+  assert.equal(duplicate.status, 400);
+  const invalid = await request('/api/rules/import', { method: 'POST', body: JSON.stringify({ rules: [{ ...imported[0], name: 'import-c', protocol: 'sctp' }] }) });
+  assert.equal(invalid.status, 400);
+  const { rules } = await (await request('/api/rules')).json();
+  assert.deepEqual(rules.filter((rule) => rule.name.startsWith('import-')).map((rule) => rule.name).sort(), ['import-a', 'import-b']);
 });
 
 test('rejects duplicate names on edit and clears rule state on delete', async () => {

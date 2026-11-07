@@ -12,10 +12,11 @@ function logRecords(logs) {
 }
 
 export class LogViewer {
-  constructor(element, latestButton, filterSelect = null) {
+  constructor(element, latestButton, filterSelect = null, searchInput = null) {
     this.element = element;
     this.latestButton = latestButton;
     this.filter = filterSelect?.value || 'all';
+    this.search = '';
     this.rows = new Map();
     this.latest = [];
     this.signature = null;
@@ -23,6 +24,7 @@ export class LogViewer {
     this.following = true;
     latestButton.addEventListener('click', () => { this.following = true; this.flush(); });
     filterSelect?.addEventListener('change', () => this.setFilter(filterSelect.value));
+    searchInput?.addEventListener('input', () => this.setSearch(searchInput.value));
     element.addEventListener('scroll', () => {
       if (!element.clientHeight) return;
       this.following = this.atBottom();
@@ -31,11 +33,18 @@ export class LogViewer {
   }
 
   visible() {
-    return this.filter === 'all' ? this.latest : this.latest.filter((record) => record.level === this.filter);
+    const query = this.search.trim().toLowerCase();
+    return this.latest.filter((record) => (this.filter === 'all' || record.level === this.filter) && (!query || record.text.toLowerCase().includes(query)));
   }
 
   setFilter(filter) {
     this.filter = filter;
+    this.following = this.atBottom();
+    this.flush();
+  }
+
+  setSearch(value) {
+    this.search = value;
     this.following = this.atBottom();
     this.flush();
   }

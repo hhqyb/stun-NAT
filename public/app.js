@@ -5,7 +5,7 @@ const rulesEl = document.querySelector('#rules');
 const emptyEl = document.querySelector('#empty');
 const editor = document.querySelector('#editor');
 const form = document.querySelector('#ruleForm');
-const template = document.querySelector('#ruleTemplate');
+const template = document.querySelector('#cardTemplate');
 document.querySelector('#version').textContent = APP_VERSION;
 const cards = new Map();
 let rules = [];
@@ -87,6 +87,24 @@ function setMode() {
   document.querySelector('.webhook-body').classList.toggle('hidden', !advanced || form.webhookMethod.value !== 'post');
 }
 
+const ruleTemplates = {
+  web: { protocol: 'tcp', targetPort: 443, checkEvery: 1 },
+  nas: { protocol: 'tcp', targetPort: 5000, checkEvery: 1 },
+  ssh: { protocol: 'tcp', targetPort: 22, checkEvery: 1 },
+  game: { protocol: 'udp', targetPort: 25565, checkEvery: 2 }
+};
+
+function applyRuleTemplate(name) {
+  const template = ruleTemplates[name];
+  if (!template) return;
+  form.protocol.value = template.protocol;
+  form.mode.value = 'forward';
+  form.targetPort.value = template.targetPort;
+  form.checkEvery.value = template.checkEvery;
+  form.routerMapping.value = 'upnp';
+  setMode();
+}
+
 function setText(element, value) {
   const next = String(value || '—');
   if (element.textContent !== next) element.textContent = next;
@@ -119,7 +137,7 @@ function detailsFor(rule) {
 function createCard(rule) {
   const node = template.content.firstElementChild.cloneNode(true);
   const card = { node, rule, fields: [] };
-  card.viewer = new LogViewer(node.querySelector('.logs'), node.querySelector('.log-latest'), node.querySelector('.log-filter'));
+  card.viewer = new LogViewer(node.querySelector('.logs'), node.querySelector('.log-latest'), node.querySelector('.log-filter'), node.querySelector('.log-search'));
   node.querySelector('details').addEventListener('toggle', (event) => { if (event.target.open) card.viewer.reveal(); });
   node.querySelector('.log-download').addEventListener('click', () => { location.assign(`/api/rules/${card.rule.id}/logs`); });
   node.querySelector('.toggle').addEventListener('click', async () => {
@@ -130,6 +148,7 @@ function createCard(rule) {
     } catch (error) { notify(error.message); }
   });
   node.querySelector('.edit').addEventListener('click', () => openEditor(card.rule));
+  node.querySelector('.copy').addEventListener('click', () => openEditor({ ...card.rule, id: '', name: `${card.rule.name} 副本`.slice(0, 80) }));
   node.querySelector('.delete').addEventListener('click', async () => {
     if (!(await askConfirm(`删除规则“${card.rule.name}”？此操作不可撤销。`))) return;
     try {
@@ -232,6 +251,9 @@ async function load() {
 
 function openEditor(rule = null) {
   form.reset();
+  document.querySelector('#ruleTemplate').value = '';
+  document.querySelector('#templateField').classList.toggle('hidden', Boolean(rule?.id));
+  document.querySelector('#webhookResult').hidden = true;
   form.id.value = rule?.id || '';
   form.name.value = rule?.name || '';
   document.querySelector('#viewMode').value = rule ? 'advanced' : 'simple';
@@ -260,6 +282,47 @@ function openEditor(rule = null) {
 }
 
 document.querySelector('#newRule').addEventListener('click', () => openEditor());
+document.querySelector('#exportRules').addEventListener('click', () => location.assign('/api/rules/export'));
+document.querySelector('#importRules').addEventListener('click', () => document.querySelector('#importFile').click());
+document.querySelector('#importFile').addEventListener('change', async (event) => {
+  const input = event.currentTarget;
+  const file = input.files[0];
+  if (!file) return;
+  try {
+    let parsed;
+    try { parsed = JSON.parse(await file.text()); } catch { throw new Error('JSON 文件格式无效'); }
+    const importedRules = Array.isArray(parsed) ? parsed : parsed?.rules;
+    if (!Array.isArray(importedRules) || !importedRules.length) throw new Error('文件中没有可导入的规则');
+    const result = await api('/api/rules/import', { method: 'POST', body: JSON.stringify({ rules: importedRules }) });
+    notify(`已导入 ${result.imported} 条规则`, 'success');
+    await load();
+  } catch (error) { notify(error.message); }
+  finally { input.value = ''; }
+});
+document.querySelector('#ruleTemplate').addEventListener('change', (event) => applyRuleTemplate(event.target.value));
+document.querySelector('#testWebhook').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  const label = button.textContent;
+  const result = document.querySelector('#webhookResult');
+  button.disabled = true; button.textContent = '测试中…';
+  result.hidden = true;
+  try {
+    const response = await api('/api/webhook/test', { method: 'POST', body: JSON.stringify({ url: form.webhookUrl.value.trim(), method: form.webhookMethod.value, body: form.webhookBody.value }) });
+    const snippet = String(response.response || '').trim().slice(0, 200);
+    result.textContent = `HTTP ${response.status}${snippet ? `：${snippet}` : ''}`;
+    result.classList.toggle('error', !response.ok);
+  } catch (error) {
+    result.textContent = error.message;
+    result.classList.add('error');
+  } finally {
+    result.hidden = false;
+    result.scrollIntoView({ block: 'nearest' });
+    button.disabled = false;
+    button.textContent = label;
+  }
+});
+for (const field of [form.webhookUrl, form.webhookBody]) field.addEventListener('input', () => { document.querySelector('#webhookResult').hidden = true; });
+form.webhookMethod.addEventListener('change', () => { document.querySelector('#webhookResult').hidden = true; });
 document.querySelector('#closeEditor').addEventListener('click', () => editor.close());
 document.querySelector('#cancelEditor').addEventListener('click', () => editor.close());
 form.protocol.addEventListener('change', setMode);

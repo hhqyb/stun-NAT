@@ -166,6 +166,52 @@ function renderWebhookJsonTemplate(template, variables) {
   });
 }
 
+function webhookRequest(rule, state, routerState = null) {
+  const payload = {
+    event: 'mapping.updated', occurredAt: new Date().toISOString(),
+    rule: { id: rule.id, name: rule.name, protocol: rule.protocol, mode: rule.mode },
+    mapping: { stunAddress: state.publicAddress, stunPort: state.publicPort, privateAddress: state.privateAddress, privatePort: state.privatePort, ip4p: state.ip4p },
+    routerMapping: routerState
+  };
+  const variables = webhookTemplateValues(rule, state, routerState);
+  let url = renderWebhookTemplate(rule.webhookUrl, variables);
+  const options = { method: String(rule.webhookMethod || 'post').toUpperCase(), headers: {} };
+  if (rule.webhookMethod === 'get') {
+    const target = new URL(url);
+    for (const [key, value] of Object.entries({ event: payload.event, rule_id: payload.rule.id, rule_name: payload.rule.name, protocol: payload.rule.protocol, public_address: payload.mapping.stunAddress, public_port: String(payload.mapping.stunPort), private_address: payload.mapping.privateAddress, private_port: String(payload.mapping.privatePort), ip4p: payload.mapping.ip4p || '' })) if (!target.searchParams.has(key)) target.searchParams.append(key, value);
+    url = target.toString();
+  } else {
+    options.headers['content-type'] = 'application/json';
+    options.body = rule.webhookBody ? renderWebhookJsonTemplate(rule.webhookBody, variables) : JSON.stringify(payload);
+  }
+  return { url, options };
+}
+
+function webhookSampleRequest(input) {
+  const webhookUrl = String(input.url || '').trim();
+  if (!webhookUrl) throw new Error('请先填写 Webhook 地址');
+  const webhookMethod = String(input.method || 'post').toLowerCase();
+  if (!['get', 'post'].includes(webhookMethod)) throw new Error('Webhook 方法只能是 get 或 post');
+  return webhookRequest(
+    { id: 'test-rule', name: '测试规则', protocol: 'tcp', mode: 'forward', webhookUrl, webhookMethod, webhookBody: String(input.body || '') },
+    { publicAddress: '203.0.113.10', publicPort: 34567, privateAddress: '192.168.1.10', privatePort: 45678, ip4p: '203.0.113.10:34567:192.168.1.10' },
+    { externalAddress: '203.0.113.10', externalPort: 34567 }
+  );
+}
+
+async function readResponseSnippet(response, limit = 500) {
+  if (!response.body) return '';
+  const reader = response.body.getReader(); const decoder = new TextDecoder(); let text = '';
+  try {
+    while (text.length < limit) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+  } finally { reader.cancel().catch(() => {}); }
+  return text.slice(0, limit);
+}
+
 function validateRule(input, existing = {}) {
   const rule = {
     id: existing.id || crypto.randomUUID(),
@@ -325,12 +371,8 @@ class RuleRunner {
     const key = `${state.mappingChangedAt || state.updatedAt}:${state.publicAddress}:${state.publicPort}`;
     if (this.lastWebhookKey === key || Date.now() - this.lastWebhookAttempt < 5000) return;
     this.lastWebhookAttempt = Date.now();
-    const payload = { event: 'mapping.updated', occurredAt: new Date().toISOString(), rule: { id: this.rule.id, name: this.rule.name, protocol: this.rule.protocol, mode: this.rule.mode }, mapping: { stunAddress: state.publicAddress, stunPort: state.publicPort, privateAddress: state.privateAddress, privatePort: state.privatePort, ip4p: state.ip4p }, routerMapping: this.routerState };
-    const variables = webhookTemplateValues(this.rule, state, this.routerState);
     try {
-      let url = renderWebhookTemplate(this.rule.webhookUrl, variables); const options = { method: this.rule.webhookMethod.toUpperCase(), headers: {} };
-      if (this.rule.webhookMethod === 'get') { const target = new URL(url); for (const [keyName, value] of Object.entries({ event: payload.event, rule_id: payload.rule.id, rule_name: payload.rule.name, protocol: payload.rule.protocol, public_address: payload.mapping.stunAddress, public_port: String(payload.mapping.stunPort), private_address: payload.mapping.privateAddress, private_port: String(payload.mapping.privatePort), ip4p: payload.mapping.ip4p || '' })) if (!target.searchParams.has(keyName)) target.searchParams.append(keyName, value); url = target.toString(); }
-      else { options.headers['content-type'] = 'application/json'; options.body = this.rule.webhookBody ? renderWebhookJsonTemplate(this.rule.webhookBody, variables) : JSON.stringify(payload); }
+      const { url, options } = webhookRequest(this.rule, state, this.routerState);
       options.signal = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
       const response = await fetch(url, options); await response.body?.cancel(); if (!response.ok) throw new Error(`HTTP ${response.status}`);
       if (signal.aborted) return;
@@ -443,6 +485,45 @@ const server = http.createServer(async (req, res) => {
     if (session.mode === 'session' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !sameOrigin(req)) return json(res, 403, { error: '请求来源无效' });
     if (req.method === 'GET' && url.pathname === '/api/auth/session') return json(res, 200, { username: session.username });
     if (url.pathname === '/login.html') { res.writeHead(303, { location: '/' }); return res.end(); }
+    if (req.method === 'POST' && url.pathname === '/api/webhook/test') {
+      const input = await parseBody(req);
+      const { url: target, options } = webhookSampleRequest(input);
+      options.signal = AbortSignal.timeout(5000);
+      const response = await fetch(target, options);
+      return json(res, 200, { ok: response.ok, status: response.status, response: await readResponseSnippet(response) });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/rules/export') {
+      const database = await loadDatabase();
+      const body = JSON.stringify({ app: 'stun-nat', version: APP_VERSION, exportedAt: new Date().toISOString(), rules: database.rules.map(({ id, ...rule }) => rule) });
+      res.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        'cache-control': 'no-store',
+        'content-disposition': `attachment; filename="stun-nat-rules-${new Date().toISOString().slice(0, 10)}.json"`
+      });
+      return res.end(body);
+    }
+    if (req.method === 'POST' && url.pathname === '/api/rules/import') {
+      const body = await parseBody(req);
+      const input = Array.isArray(body) ? body : body?.rules;
+      if (!Array.isArray(input) || !input.length) throw new Error('导入文件没有规则');
+      if (input.length > 100) throw new Error('单次最多导入 100 条规则');
+      const imported = await withDatabase(async () => {
+        const database = await loadDatabase();
+        const names = new Set(database.rules.map((rule) => rule.name));
+        const rules = input.map((raw, index) => {
+          let rule;
+          try { rule = validateRule(raw && typeof raw === 'object' ? raw : {}); }
+          catch (error) { throw new Error(`第 ${index + 1} 条规则无效：${error.message}`); }
+          if (names.has(rule.name)) throw new Error(`规则名称已存在或重复：${rule.name}`);
+          names.add(rule.name);
+          return rule;
+        });
+        await saveDatabase({ ...database, rules: [...database.rules, ...rules] });
+        return rules.length;
+      });
+      await refreshRunners();
+      return json(res, 201, { imported });
+    }
     if (logMatch && req.method === 'GET') {
       const filename = path.join(logDir, `${logMatch[1]}.log`);
       let handle;

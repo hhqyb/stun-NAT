@@ -97,7 +97,14 @@ test('browser: UPnP defaults, UTC+8 and stable log reading through polling', { s
 
   await t.test('new editor defaults to UPnP, while an explicit existing none remains none', async () => {
     assert.equal(await evaluate("document.querySelector('#newRule').click(); document.querySelector('[name=routerMapping]').value"), 'upnp');
-    assert.equal(await evaluate("document.querySelector('#closeEditor').click(); document.querySelector('.edit').click(); document.querySelector('[name=routerMapping]').value"), 'none');
+    assert.deepEqual(await evaluate("document.querySelector('#ruleTemplate').value = 'game'; document.querySelector('#ruleTemplate').dispatchEvent(new Event('change')); ({ protocol: document.querySelector('[name=protocol]').value, port: document.querySelector('[name=targetPort]').value, mode: document.querySelector('[name=mode]').value })"), { protocol: 'udp', port: '25565', mode: 'forward' });
+    assert.equal(await evaluate("document.querySelector('#closeEditor').click(); document.querySelector('.edit').click(); document.querySelector('#templateField').classList.contains('hidden')"), true);
+    assert.equal(await evaluate("document.querySelector('[name=routerMapping]').value"), 'none');
+    await evaluate("document.querySelector('#closeEditor').click()");
+  });
+
+  await t.test('copy prefills a new rule with a new name', async () => {
+    assert.deepEqual(await evaluate("document.querySelector('.copy').click(); ({ id: document.querySelector('[name=id]').value, name: document.querySelector('[name=name]').value, template: document.querySelector('#templateField').classList.contains('hidden') })"), { id: '', name: 'First 副本', template: false });
     await evaluate("document.querySelector('#closeEditor').click()");
   });
 
@@ -109,6 +116,14 @@ test('browser: UPnP defaults, UTC+8 and stable log reading through polling', { s
     await evaluate("card.querySelector('.log-filter').value = 'error'; card.querySelector('.log-filter').dispatchEvent(new Event('change'))");
     assert.equal(await evaluate("log.querySelector('.log-placeholder')?.textContent"), '暂无日志');
     await evaluate("card.querySelector('.log-filter').value = 'all'; card.querySelector('.log-filter').dispatchEvent(new Event('change'))");
+    assert.match(await evaluate('log.textContent'), /日志条目 0/);
+  });
+
+  await t.test('log search narrows visible entries', async () => {
+    await evaluate("card.querySelector('.log-search').value = '日志条目 79'; card.querySelector('.log-search').dispatchEvent(new Event('input'))");
+    assert.equal(await evaluate('log.children.length'), 1);
+    assert.match(await evaluate('log.textContent'), /日志条目 79/);
+    await evaluate("card.querySelector('.log-search').value = ''; card.querySelector('.log-search').dispatchEvent(new Event('input'))");
     assert.match(await evaluate('log.textContent'), /日志条目 0/);
   });
 
