@@ -130,6 +130,27 @@ test('API and persisted logs have stable IDs and explicit UTC+8 timestamps', asy
   assert.match(log, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}\+08:00 /);
 });
 
+test('returns 304 when the rule list is unchanged', async () => {
+  const first = await request('/api/rules');
+  assert.equal(first.status, 200);
+  const etag = first.headers.get('etag');
+  assert.match(etag, /^".+"$/);
+  await first.arrayBuffer();
+  const second = await request('/api/rules', { headers: { 'if-none-match': etag } });
+  assert.equal(second.status, 304);
+  assert.equal(await second.text(), '');
+});
+
+test('downloads the current rule log', async () => {
+  const { rules } = await (await request('/api/rules')).json();
+  const rule = rules.find((item) => item.name === 'engine-error');
+  const response = await request(`/api/rules/${rule.id}/logs`);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-type'), /text\/plain/);
+  assert.match(response.headers.get('content-disposition'), /attachment/);
+  assert.match(await response.text(), /启动规则/);
+});
+
 test('rejects duplicate names on edit and clears rule state on delete', async () => {
   const base = { enabled: false, protocol: 'tcp', stunServer: 'turn.cloudflare.com:3478', keepaliveServer: 'www.cloudflare.com:80', interval: 30, checkEvery: 10, mode: 'forward', targetHost: '192.168.1.20', targetPort: 443, routerMapping: 'none' };
   const source = await request('/api/rules', { method: 'POST', body: JSON.stringify({ ...base, name: 'rename-source' }) });

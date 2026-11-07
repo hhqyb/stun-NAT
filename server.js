@@ -71,6 +71,7 @@ async function ensureStorage() {
 
 let databaseWarning = '';
 let databaseLock = Promise.resolve();
+let databaseCache = null;
 
 function withDatabase(operation) {
   const run = databaseLock.then(operation);
@@ -85,15 +86,22 @@ function needsRestart(previous, next) {
 }
 
 async function loadDatabase() {
+  let stat;
+  try { stat = await fsp.stat(databasePath); }
+  catch (error) { if (error.code === 'ENOENT') { databaseCache = null; return { rules: [] }; } throw error; }
+  if (databaseCache && databaseCache.mtimeMs === stat.mtimeMs && databaseCache.size === stat.size) return databaseCache.data;
   let text;
   try { text = await fsp.readFile(databasePath, 'utf8'); }
-  catch (error) { if (error.code === 'ENOENT') return { rules: [] }; throw error; }
+  catch (error) { if (error.code === 'ENOENT') { databaseCache = null; return { rules: [] }; } throw error; }
   try {
     const database = JSON.parse(text);
     if (!Array.isArray(database.rules)) throw new Error('rules 字段必须是数组');
-    return { ...database, rules: database.rules.map((rule) => ({ ...rule, routerMapping: rule.routerMapping ?? 'upnp' })) };
+    const data = { ...database, rules: database.rules.map((rule) => ({ ...rule, routerMapping: rule.routerMapping ?? 'upnp' })) };
+    databaseCache = { mtimeMs: stat.mtimeMs, size: stat.size, data };
+    return data;
   } catch (error) {
     const backup = `${databasePath}.corrupt-${Date.now()}`;
+    databaseCache = null;
     try {
       await fsp.rename(databasePath, backup);
       databaseWarning = `规则库损坏，已备份为 ${path.basename(backup)}：${error.message}`;
@@ -109,6 +117,8 @@ async function saveDatabase(database) {
   const temp = `${databasePath}.tmp`;
   await fsp.writeFile(temp, `${JSON.stringify(database, null, 2)}\n`, { mode: 0o600 });
   await fsp.rename(temp, databasePath);
+  const stat = await fsp.stat(databasePath);
+  databaseCache = { mtimeMs: stat.mtimeMs, size: stat.size, data: database };
 }
 
 function value(input, key, fallback = '') { return input[key] === undefined ? fallback : input[key]; }
@@ -210,7 +220,7 @@ async function readRuleState(id) {
 }
 
 class RuleRunner {
-  constructor(rule) { this.rule = rule; this.child = null; this.desired = false; this.logs = []; this.restarting = false; this.routerTask = new RouterMappingTask({ map: mapRouter, log: (level, message) => this.log(level, message) }); this.networkChecks = null; this.checkController = null; this.restartTimer = null; this.firewallPort = null; this.lastEndpoint = ''; this.lastWebhookKey = ''; this.lastWebhookAttempt = 0; this.lastProbeAt = 0; this.probeFailures = 0; this.health = { local: 'waiting', external: 'not-configured', verifiedAt: null, detail: '等待首个 STUN 心跳' }; }
+  constructor(rule) { this.rule = rule; this.child = null; this.desired = false; this.logs = []; this.restarting = false; this.state = null; this.history = []; this.routerTask = new RouterMappingTask({ map: mapRouter, log: (level, message) => this.log(level, message) }); this.networkChecks = null; this.checkController = null; this.restartTimer = null; this.firewallPort = null; this.lastEndpoint = ''; this.lastWebhookKey = ''; this.lastWebhookAttempt = 0; this.lastProbeAt = 0; this.probeFailures = 0; this.health = { local: 'waiting', external: 'not-configured', verifiedAt: null, detail: '等待首个 STUN 心跳' }; }
   get routerState() { return this.routerTask.state; }
   log(level, message) {
     const entry = { id: crypto.randomUUID(), at: formatLogTime(), level, message: String(message).trim() };
@@ -230,6 +240,7 @@ class RuleRunner {
     if (this.child) return;
     clearTimeout(this.restartTimer); this.routerTask.reset();
     await fsp.rm(path.join(stateDir, `${this.rule.id}.json`), { force: true });
+    this.state = null;
     if (!this.desired || this.child) return;
     this.lastProbeAt = 0; this.probeFailures = 0; this.health = { local: 'waiting', external: this.rule.externalProbeUrl ? 'waiting' : 'not-configured', verifiedAt: null, detail: '正在建立 STUN 映射' };
     this.log('info', `启动规则：${this.args().join(' ')}`);
@@ -286,6 +297,10 @@ class RuleRunner {
     if (!state) return;
     const endpoint = `${state.publicAddress}:${state.publicPort}`;
     if (this.lastEndpoint && endpoint !== this.lastEndpoint) this.log('info', `公网映射已变化：${this.lastEndpoint} -> ${endpoint}`);
+    if (!this.lastEndpoint || endpoint !== this.lastEndpoint) {
+      this.history.push({ at: new Date().toISOString(), address: state.publicAddress, port: state.publicPort });
+      if (this.history.length > 20) this.history.shift();
+    }
     this.lastEndpoint = endpoint;
     const verifiedAt = Date.parse(state.lastVerifiedAt || state.updatedAt || ''); const expected = this.rule.protocol === 'udp' ? this.rule.interval * this.rule.checkEvery : this.rule.interval;
     const age = Number.isFinite(verifiedAt) ? Date.now() - verifiedAt : Infinity;
@@ -332,7 +347,7 @@ class RuleRunner {
       .finally(() => { if (this.networkChecks === task) this.networkChecks = null; });
     this.networkChecks = task;
   }
-  snapshot(state) { return { ...this.rule, running: Boolean(this.child) && this.desired, state, routerState: this.routerState, health: this.health, logs: this.logs.slice(-80) }; }
+  snapshot() { return { ...this.rule, running: Boolean(this.child) && this.desired, state: this.state, routerState: this.routerState, health: this.health, history: this.history.slice(), logs: this.logs.slice(-80) }; }
 }
 
 let reconciling = false;
@@ -345,6 +360,7 @@ async function reconcileRouterMappings() {
       if (!child || !runner.desired || runner.restarting) continue;
       const state = await readRuleState(runner.rule.id);
       if (!state || runner.child !== child || !runner.desired || runner.restarting) continue;
+      runner.state = state;
       runner.observeState(state);
       if (runner.restarting) continue;
       runner.ensureFirewallRule(state.privatePort);
@@ -358,7 +374,14 @@ async function reconcileRouterMappings() {
 async function refreshRunners() {
   const { rules } = await loadDatabase(); const ids = new Set(rules.map((rule) => rule.id));
   for (const [id, runner] of runners) if (!ids.has(id)) { runner.stop(); runners.delete(id); }
-  for (const rule of rules) { let runner = runners.get(rule.id); if (!runner) { runner = new RuleRunner(rule); runners.set(rule.id, runner); } else runner.rule = rule; runner.desired = rule.enabled; if (rule.enabled && !runner.child) await runner.start(); if (!rule.enabled) runner.stop(); }
+  for (const rule of rules) {
+    let runner = runners.get(rule.id);
+    if (!runner) { runner = new RuleRunner(rule); runner.state = await readRuleState(rule.id); runners.set(rule.id, runner); }
+    else runner.rule = rule;
+    runner.desired = rule.enabled;
+    if (rule.enabled && !runner.child) await runner.start();
+    if (!rule.enabled) runner.stop();
+  }
 }
 
 async function parseBody(req) {
@@ -388,7 +411,7 @@ function staticFile(res, pathname) {
 
 const server = http.createServer(async (req, res) => {
   securityHeaders(res);
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`); const match = url.pathname.match(/^\/api\/rules\/([0-9a-f-]+)(?:\/(start|stop))?$/);
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`); const match = url.pathname.match(/^\/api\/rules\/([0-9a-f-]+)(?:\/(start|stop))?$/); const logMatch = url.pathname.match(/^\/api\/rules\/([0-9a-f-]+)\/logs$/);
   try {
     if (req.method === 'GET' && url.pathname === '/healthz') return json(res, 200, { status: 'ok', version: APP_VERSION, uptimeSeconds: Math.round(process.uptime()) });
     if (req.method === 'POST' && url.pathname === '/api/auth/login') {
@@ -420,17 +443,40 @@ const server = http.createServer(async (req, res) => {
     if (session.mode === 'session' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !sameOrigin(req)) return json(res, 403, { error: '请求来源无效' });
     if (req.method === 'GET' && url.pathname === '/api/auth/session') return json(res, 200, { username: session.username });
     if (url.pathname === '/login.html') { res.writeHead(303, { location: '/' }); return res.end(); }
+    if (logMatch && req.method === 'GET') {
+      const filename = path.join(logDir, `${logMatch[1]}.log`);
+      let handle;
+      try { handle = await fsp.open(filename, 'r'); } catch { return json(res, 404, { error: '日志不存在' }); }
+      const stat = await handle.stat();
+      const database = await loadDatabase();
+      const rule = database.rules.find((item) => item.id === logMatch[1]);
+      const name = `${rule?.name || logMatch[1]}.log`.replace(/[\\/:*?"<>|\r\n]/g, '_');
+      res.writeHead(200, {
+        'content-type': 'text/plain; charset=utf-8',
+        'content-length': stat.size,
+        'cache-control': 'no-store',
+        'content-disposition': `attachment; filename="stun-nat-${logMatch[1]}.log"; filename*=UTF-8''${encodeURIComponent(name)}`
+      });
+      const stream = handle.createReadStream();
+      stream.on('error', () => res.destroy());
+      stream.pipe(res);
+      return;
+    }
     if (req.method === 'GET' && url.pathname === '/api/rules') {
       const database = await loadDatabase();
-      const output = await Promise.all(database.rules.map(async (rule) => { const runner = runners.get(rule.id); return runner ? runner.snapshot(await readRuleState(rule.id)) : { ...rule, running: false, state: await readRuleState(rule.id), logs: [] }; }));
-      return json(res, 200, { rules: output, ...(databaseWarning ? { warning: databaseWarning } : {}) });
+      const output = database.rules.map((rule) => { const runner = runners.get(rule.id); return runner ? runner.snapshot() : { ...rule, running: false, state: null, logs: [] }; });
+      const body = JSON.stringify({ rules: output, ...(databaseWarning ? { warning: databaseWarning } : {}) });
+      const etag = `"${crypto.createHash('sha1').update(body).digest('base64url')}"`;
+      if (req.headers['if-none-match'] === etag) { res.writeHead(304, { etag, 'cache-control': 'no-store' }); return res.end(); }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', etag });
+      return res.end(body);
     }
     if (req.method === 'POST' && url.pathname === '/api/rules') {
       const body = await parseBody(req);
       const rule = await withDatabase(async () => {
         const database = await loadDatabase(); const rule = validateRule(body);
         if (database.rules.some((item) => item.name === rule.name)) throw new Error('规则名称已存在');
-        database.rules.push(rule); await saveDatabase(database);
+        await saveDatabase({ ...database, rules: [...database.rules, rule] });
         return rule;
       });
       await refreshRunners();
@@ -443,7 +489,8 @@ const server = http.createServer(async (req, res) => {
         if (index < 0) return null;
         const previous = database.rules[index]; const rule = validateRule(body, previous);
         if (database.rules.some((item) => item.id !== rule.id && item.name === rule.name)) throw new Error('规则名称已存在');
-        database.rules[index] = rule; await saveDatabase(database);
+        const rules = [...database.rules]; rules[index] = rule;
+        await saveDatabase({ ...database, rules });
         return { previous, rule };
       });
       if (!result) return json(res, 404, { error: '规则不存在' });
@@ -456,14 +503,13 @@ const server = http.createServer(async (req, res) => {
     if (match && req.method === 'DELETE' && !match[2]) {
       await withDatabase(async () => {
         const database = await loadDatabase();
-        database.rules = database.rules.filter((rule) => rule.id !== match[1]);
-        await saveDatabase(database);
+        await saveDatabase({ ...database, rules: database.rules.filter((rule) => rule.id !== match[1]) });
       });
       const runner = runners.get(match[1]); runner?.stop(); runners.delete(match[1]);
       await fsp.rm(path.join(stateDir, `${match[1]}.json`), { force: true });
       return json(res, 204, {});
     }
-    if (match && req.method === 'POST' && match[2]) { const runner = runners.get(match[1]); if (!runner) return json(res, 404, { error: '规则不存在' }); if (match[2] === 'start') await runner.start(); else runner.stop(); return json(res, 200, runner.snapshot(await readRuleState(match[1]))); }
+    if (match && req.method === 'POST' && match[2]) { const runner = runners.get(match[1]); if (!runner) return json(res, 404, { error: '规则不存在' }); if (match[2] === 'start') await runner.start(); else runner.stop(); return json(res, 200, runner.snapshot()); }
     staticFile(res, url.pathname);
   } catch (error) { json(res, 400, { error: error.message }); }
 });

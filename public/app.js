@@ -10,6 +10,7 @@ document.querySelector('#version').textContent = APP_VERSION;
 const cards = new Map();
 let rules = [];
 let loadSequence = 0;
+let rulesEtag = '';
 let redirecting = false;
 
 class ApiError extends Error {
@@ -118,8 +119,9 @@ function detailsFor(rule) {
 function createCard(rule) {
   const node = template.content.firstElementChild.cloneNode(true);
   const card = { node, rule, fields: [] };
-  card.viewer = new LogViewer(node.querySelector('.logs'), node.querySelector('.log-latest'));
+  card.viewer = new LogViewer(node.querySelector('.logs'), node.querySelector('.log-latest'), node.querySelector('.log-filter'));
   node.querySelector('details').addEventListener('toggle', (event) => { if (event.target.open) card.viewer.reveal(); });
+  node.querySelector('.log-download').addEventListener('click', () => { location.assign(`/api/rules/${card.rule.id}/logs`); });
   node.querySelector('.toggle').addEventListener('click', async () => {
     try {
       await api(`/api/rules/${card.rule.id}/${card.rule.running ? 'stop' : 'start'}`, { method: 'POST' });
@@ -151,6 +153,29 @@ function createCard(rule) {
   return card;
 }
 
+function renderHistory(node, rule) {
+  const list = node.querySelector('.history');
+  const history = rule.history || [];
+  list.replaceChildren();
+  if (!history.length) {
+    const item = document.createElement('li');
+    item.className = 'history-empty';
+    item.textContent = '暂无映射记录';
+    list.append(item);
+    return;
+  }
+  for (const entry of [...history].reverse()) {
+    const item = document.createElement('li');
+    const time = document.createElement('time');
+    time.dateTime = entry.at;
+    time.textContent = localTime(entry.at);
+    const endpoint = document.createElement('code');
+    endpoint.textContent = `${entry.address}:${entry.port}`;
+    item.append(time, endpoint);
+    list.append(item);
+  }
+}
+
 function render() {
   emptyEl.hidden = rules.length > 0;
   setText(document.querySelector('#summary'), `${rules.filter((rule) => rule.running).length}/${rules.length} 条规则运行中`);
@@ -171,6 +196,7 @@ function render() {
     setText(mapping, rule.state?.publicAddress ? `公网映射  ${rule.state.publicAddress}:${rule.state.publicPort}` : rule.running ? '正在建立 STUN 映射…' : '规则未运行');
     mapping.classList.toggle('offline', !rule.state?.publicAddress);
     detailsFor(rule).forEach(([, value], fieldIndex) => setText(card.fields[fieldIndex], value));
+    renderHistory(node, rule);
     card.viewer.update(rule.logs || []);
     const toggle = node.querySelector('.toggle');
     setText(toggle, rule.running ? '停止' : '启动');
@@ -181,8 +207,16 @@ function render() {
 async function load() {
   const sequence = ++loadSequence;
   try {
-    const result = await api('/api/rules');
+    const response = await fetch('/api/rules', { headers: rulesEtag ? { 'if-none-match': rulesEtag } : {} });
+    if (response.status === 304) return;
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      if (response.status === 401) { goToLogin(); return; }
+      throw new ApiError(body.error || `请求失败：${response.status}`, response.status);
+    }
+    const result = await response.json();
     if (sequence !== loadSequence) return;
+    rulesEtag = response.headers.get('etag') || '';
     rules = result.rules;
     lastLoadError = '';
     render();

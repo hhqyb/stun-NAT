@@ -69,6 +69,8 @@ test('non-runtime edits keep the NATMap channel alive; target changes restart it
   const { rule } = await created.json();
   await waitFor(async () => (await starts()).length === 1);
   await waitFor(async () => (await snapshot(rule.id))?.running === true);
+  await waitFor(async () => ((await snapshot(rule.id))?.history?.length || 0) >= 1);
+  assert.equal((await snapshot(rule.id)).history[0].address, '203.0.113.9');
 
   const renamed = await request(`/api/rules/${rule.id}`, {
     method: 'PUT',

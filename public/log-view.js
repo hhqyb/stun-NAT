@@ -7,25 +7,37 @@ function logRecords(logs) {
     const identity = log.id || JSON.stringify([log.at, log.level, log.message]);
     const occurrence = occurrences.get(identity) || 0;
     occurrences.set(identity, occurrence + 1);
-    return { key: `${identity}:${occurrence}`, text: `${formatLogTime(log.at)} ${log.level.toUpperCase()} ${log.message}` };
+    return { key: `${identity}:${occurrence}`, level: log.level, text: `${formatLogTime(log.at)} ${log.level.toUpperCase()} ${log.message}` };
   });
 }
 
 export class LogViewer {
-  constructor(element, latestButton) {
+  constructor(element, latestButton, filterSelect = null) {
     this.element = element;
     this.latestButton = latestButton;
+    this.filter = filterSelect?.value || 'all';
     this.rows = new Map();
     this.latest = [];
     this.signature = null;
     this.pending = false;
     this.following = true;
     latestButton.addEventListener('click', () => { this.following = true; this.flush(); });
+    filterSelect?.addEventListener('change', () => this.setFilter(filterSelect.value));
     element.addEventListener('scroll', () => {
       if (!element.clientHeight) return;
       this.following = this.atBottom();
       if (this.following && this.pending && !this.hasSelection()) this.flush();
     });
+  }
+
+  visible() {
+    return this.filter === 'all' ? this.latest : this.latest.filter((record) => record.level === this.filter);
+  }
+
+  setFilter(filter) {
+    this.filter = filter;
+    this.following = this.atBottom();
+    this.flush();
   }
 
   hasSelection() {
@@ -47,7 +59,7 @@ export class LogViewer {
 
   update(logs) {
     this.latest = logRecords(logs);
-    const signature = JSON.stringify(this.latest);
+    const signature = JSON.stringify(this.visible());
     if (signature === this.signature) {
       this.pending = false;
       this.latestButton.disabled = true;
@@ -67,12 +79,13 @@ export class LogViewer {
   }
 
   flush() {
-    const keys = new Set(this.latest.map((record) => record.key));
+    const visible = this.visible();
+    const keys = new Set(visible.map((record) => record.key));
     for (const [key, row] of this.rows) {
       if (!keys.has(key)) { row.remove(); this.rows.delete(key); }
     }
     this.element.querySelector('.log-placeholder')?.remove();
-    this.latest.forEach((record, index) => {
+    visible.forEach((record, index) => {
       let row = this.rows.get(record.key);
       if (!row) {
         row = this.element.ownerDocument.createElement('span');
@@ -82,13 +95,13 @@ export class LogViewer {
       if (row.textContent !== record.text) row.textContent = record.text;
       if (this.element.children[index] !== row) this.element.insertBefore(row, this.element.children[index] || null);
     });
-    if (!this.latest.length) {
+    if (!visible.length) {
       const placeholder = this.element.ownerDocument.createElement('span');
       placeholder.className = 'log-placeholder';
       placeholder.textContent = '暂无日志';
       this.element.append(placeholder);
     }
-    this.signature = JSON.stringify(this.latest);
+    this.signature = JSON.stringify(visible);
     this.pending = false;
     this.latestButton.disabled = true;
     this.latestButton.textContent = '已显示最新日志';

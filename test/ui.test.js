@@ -105,6 +105,13 @@ test('browser: UPnP defaults, UTC+8 and stable log reading through polling', { s
   await waitFor('log.clientHeight > 0 && log.scrollHeight - log.clientHeight - log.scrollTop <= 2');
   assert.match(await evaluate('log.textContent'), /2026-11-06T10:34:01\.391\+08:00/);
 
+  await t.test('log level filter only shows matching entries', async () => {
+    await evaluate("card.querySelector('.log-filter').value = 'error'; card.querySelector('.log-filter').dispatchEvent(new Event('change'))");
+    assert.equal(await evaluate("log.querySelector('.log-placeholder')?.textContent"), '暂无日志');
+    await evaluate("card.querySelector('.log-filter').value = 'all'; card.querySelector('.log-filter').dispatchEvent(new Event('change'))");
+    assert.match(await evaluate('log.textContent'), /日志条目 0/);
+  });
+
   await t.test('reading older lines preserves DOM, focus, open state and viewport after a rolling snapshot', async () => {
     await evaluate('log.focus(); log.scrollTop = 120; window.oldTop = log.scrollTop; window.oldPageTop = scrollY; window.oldText = log.textContent; window.oldRow = log.children[10];');
     await delay(30);

@@ -8,7 +8,7 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="stylesheet" href="/app.css">
   </head>
-  <body>
+  <body class="console">
     <header class="topbar">
       <div class="brand"><strong>STUN-NAT</strong><span class="version" id="version"></span><span class="tagline">动态端口穿透</span></div>
       <div class="topbar-actions">
@@ -90,7 +90,8 @@
         <header><div><h2 class="name"></h2><p class="meta"></p></div><div class="actions"><button class="toggle"></button><button class="secondary edit">编辑</button><button class="danger delete">删除</button></div></header>
         <div class="mapping"></div>
         <div class="details"></div>
-        <details><summary>规则日志</summary><div class="log-toolbar"><small>东八区（UTC+8）</small><button type="button" class="secondary log-latest" disabled>已显示最新日志</button></div><pre class="logs" tabindex="0" aria-label="规则日志（东八区）"></pre></details>
+        <details class="log-details"><summary>规则日志</summary><div class="log-toolbar"><div class="log-tools"><small>东八区（UTC+8）</small><select class="log-filter" aria-label="日志级别筛选"><option value="all">全部级别</option><option value="info">信息</option><option value="warn">警告</option><option value="error">错误</option></select></div><div class="log-tools"><button type="button" class="secondary log-download">下载日志</button><button type="button" class="secondary log-latest" disabled>已显示最新日志</button></div></div><pre class="logs" tabindex="0" aria-label="规则日志（东八区）"></pre></details>
+        <details class="history-details"><summary>映射历史</summary><ol class="history" aria-label="最近映射历史"></ol></details>
       </article>
     </template>
     <script type="module" src="/app.js"></script>
