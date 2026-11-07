@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { APP_VERSION } from '../public/version.js';
 
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'stunmap-test-'));
 const port = 17991;
@@ -23,6 +24,15 @@ after(async () => { app.kill('SIGTERM'); await fs.rm(directory, { recursive: tru
 test('requires HTTP basic authentication', async () => {
   const response = await fetch(`http://127.0.0.1:${port}/api/rules`);
   assert.equal(response.status, 401);
+});
+
+test('exposes an unauthenticated health endpoint', async () => {
+  const response = await fetch(`http://127.0.0.1:${port}/healthz`);
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.status, 'ok');
+  assert.equal(body.version, APP_VERSION);
+  assert.equal(typeof body.uptimeSeconds, 'number');
 });
 
 test('serves a login page and authenticates browser sessions with cookies', async () => {
@@ -118,6 +128,22 @@ test('API and persisted logs have stable IDs and explicit UTC+8 timestamps', asy
   }
   const log = await fs.readFile(path.join(directory, 'logs', `${rule.id}.log`), 'utf8');
   assert.match(log, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}\+08:00 /);
+});
+
+test('rejects duplicate names on edit and clears rule state on delete', async () => {
+  const base = { enabled: false, protocol: 'tcp', stunServer: 'turn.cloudflare.com:3478', keepaliveServer: 'www.cloudflare.com:80', interval: 30, checkEvery: 10, mode: 'forward', targetHost: '192.168.1.20', targetPort: 443, routerMapping: 'none' };
+  const source = await request('/api/rules', { method: 'POST', body: JSON.stringify({ ...base, name: 'rename-source' }) });
+  assert.equal(source.status, 201);
+  const target = await request('/api/rules', { method: 'POST', body: JSON.stringify({ ...base, name: 'rename-target' }) });
+  assert.equal(target.status, 201);
+  const second = (await target.json()).rule;
+  const duplicate = await request(`/api/rules/${second.id}`, { method: 'PUT', body: JSON.stringify({ name: 'rename-source' }) });
+  assert.equal(duplicate.status, 400);
+  const stateFile = path.join(directory, 'state', `${second.id}.json`);
+  await fs.writeFile(stateFile, '{}');
+  const removed = await request(`/api/rules/${second.id}`, { method: 'DELETE' });
+  assert.equal(removed.status, 204);
+  await assert.rejects(fs.access(stateFile));
 });
 
 test('throttles repeated login failures', async () => {

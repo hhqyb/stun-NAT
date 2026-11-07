@@ -14,6 +14,9 @@
 - TCP 使用同源端口保活连接和 STUN TCP 探测；UDP 持续保活并周期性探测。
 - 本机代理转发模式：由本机 NATMap 进程将 TCP/UDP 流量转发到 `目标地址:目标端口`。
 - bind 直转模式：只建立 NAT 映射；由路由器端口转发直接指向目标设备，可保留真实访问者 IP。
+- 编辑规则时，只有穿透/转发参数变化才重建 NATMap 通道；名称、Webhook、探针等配置可热更新。
+- 规则库损坏时自动备份为 `rules.json.corrupt-<时间戳>` 并保留控制台可用。
+- 内置 `/healthz` 健康检查端点，Docker 镜像带有 `HEALTHCHECK`。
 - 默认使用 UPnP IGD 自动上级路由映射，可手动选择 NAT-PMP 或不使用；已有规则的显式选择保持不变。
 - Linux `iptables` 自动放行通道端口（每条规则可选）。
 - 每条规则保存动态公网地址、端口、IP4P 地址、本地端口、运行状态和日志。
@@ -42,18 +45,15 @@ docker compose up -d --build
 
 ## Docker 镜像自动构建
 
-`.github/workflows/docker-publish.yml` 会在推送到 `main`、推送 `v*` 标签或手动触发时，构建 `linux/amd64` 与 `linux/arm64` 镜像并推送到 GitHub Container Registry（GHCR）：
+`.github/workflows/docker-publish.yml` 会在推送到 `main`、推送 `v*` 标签或手动触发时，先运行 Node 22/24 测试矩阵，通过后构建 `linux/amd64` 与 `linux/arm64` 镜像并推送到 GitHub Container Registry（GHCR）。PR 只构建 amd64 用于验证。
 
 ```sh
 docker pull ghcr.io/hhqyb/stun-nat:latest
 ```
 
-镜像同时带有 `main`、Git 标签和 `sha-<短提交>` 标签；`latest` 仅在默认分支更新。构建使用仓库自带的 `GITHUB_TOKEN`，不需要额外 Secret。
+镜像同时带有 `main`、Git 标签和 `sha-<短提交>` 标签；`latest` 仅在默认分支更新。构建使用仓库自带的 `GITHUB_TOKEN`，不需要额外 Secret。镜像内置健康检查，主服务访问 `/healthz`，探针容器检查自身的探针端口。
 
-首次启用时请确认两项 GitHub 设置：
-
-1. **Actions 权限**：仓库 `Settings → Actions → General → Workflow permissions` 选择 `Read and write permissions`，否则推送 GHCR 会返回 403。
-2. **镜像可见性**：首次构建完成后，在仓库的 `Packages` 中把 `stun-nat` 设为 `Public`；保持私有则需要先执行 `docker login ghcr.io` 才能拉取。
+首次启用时通常不需要额外配置。如果推送 GHCR 返回 403，请到 `Settings → Actions → General → Workflow permissions` 选择 `Read and write permissions` 后重跑。镜像包在 `Packages` 中默认可能为私有，设为 `Public` 后其他设备即可免登录拉取；保持私有则需先执行 `docker login ghcr.io`。
 
 如需改用 Docker Hub，在仓库 Secrets 中添加 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`，并替换工作流中的登录方式与镜像地址。
 
@@ -62,6 +62,7 @@ docker pull ghcr.io/hhqyb/stun-nat:latest
 - 未登录访问管理页面会跳转到内置登录页；登录成功后签发 `HttpOnly`、`SameSite=Strict` 的会话 Cookie，有效期 12 小时。会话保存在内存中，服务重启后需重新登录。
 - 同一来源连续输错 5 次密码会暂时锁定 5 分钟，成功登录后计数清零。
 - 脚本或 API 客户端仍可使用 HTTP Basic Auth，凭据与登录页一致。
+- `GET /healthz` 无需认证，仅返回服务状态、版本号和运行时间，用于容器健康检查与外部监控。
 - 管理页面带 CSP，页面与 API 均返回 `X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff` 等安全响应头；通过反向代理启用 HTTPS 且传递 `X-Forwarded-Proto: https` 时，会话 Cookie 自动附带 `Secure`。
 
 首次建议创建一条 TCP 本机代理转发规则：
@@ -155,4 +156,4 @@ STUNMAP_ADMIN_PASSWORD=dev-password npm test
 STUNMAP_ADMIN_PASSWORD=dev-password NATMAP_BIN=/path/to/natmap npm start
 ```
 
-测试覆盖认证、规则校验、UPnP 默认值及显式配置保留、创建/停止/删除、东八区日志时间、跨规则日志轮转与总上限、UPnP 发现与响应兼容、源地址选择、超时、请求串行化、退避、续约及取消。未设置 `NATMAP_BIN` 时会跳过两项真实引擎转发测试。浏览器回归会自动寻找常见位置的 Chrome/Chromium，也可设置 `CHROME_BIN=/path/to/chrome`，检查展开日志、滚动、选区、焦点、暂停/恢复跟随及编辑默认值；没有浏览器时仅跳过该项。真实公网 NAT 映射还必须在目标网络中验证，不能以本机回环结果代替。
+测试覆盖认证、规则校验、热更新不重启、规则库损坏备份、并发写串行化、健康检查、UPnP 默认值及显式配置保留、创建/停止/删除、东八区日志时间、跨规则日志轮转与总上限、UPnP 发现与响应兼容、源地址选择、超时、请求串行化、退避、续约及取消。未设置 `NATMAP_BIN` 时会跳过两项真实引擎转发测试。浏览器回归会自动寻找常见位置的 Chrome/Chromium，也可设置 `CHROME_BIN=/path/to/chrome`，检查展开日志、滚动、选区、焦点、暂停/恢复跟随及编辑默认值；没有浏览器时仅跳过该项。真实公网 NAT 映射还必须在目标网络中验证，不能以本机回环结果代替。

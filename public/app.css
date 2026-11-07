@@ -190,6 +190,9 @@ form > footer { border-top: 1px solid #e9edf2; border-bottom: 0; justify-content
 .icon { background: transparent; color: var(--muted); padding: 0 4px; font-size: 28px; line-height: 1; font-weight: 400; }
 .icon:hover { background: transparent; color: var(--ink); }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 20px; overflow: auto; max-height: calc(100vh - 180px); }
+.form-section { min-width: 0; margin: 0; padding: 2px 16px 16px; border: 1px solid var(--line); border-radius: var(--radius-md); }
+.form-section legend { padding: 0 6px; margin-left: 2px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.section-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 label { display: grid; gap: 6px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
 input, select {
   width: 100%;
@@ -230,14 +233,27 @@ textarea:focus { outline: none; border-color: var(--brand); box-shadow: var(--ri
 .logs { overflow-anchor: none; margin-top: 4px; }
 .log-entry { display: block; }
 
+.confirm { width: min(420px, calc(100vw - 32px)); }
+.confirm-body { padding: 22px 20px 8px; }
+.confirm-body h2 { margin-bottom: 8px; }
+.confirm-body p { color: var(--muted); font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.confirm footer { display: flex; justify-content: flex-end; gap: 8px; padding: 16px 20px 20px; }
+
+.toasts { position: fixed; right: 24px; bottom: 24px; z-index: 20; display: flex; flex-direction: column; gap: 10px; max-width: min(400px, calc(100vw - 32px)); pointer-events: none; }
+.toast { pointer-events: auto; padding: 11px 14px; border-radius: var(--radius-sm); border-left: 3px solid #7f8da1; background: var(--navy); color: #f2f6fb; box-shadow: var(--shadow-md); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; animation: toast-in 180ms ease; }
+.toast.error { border-left-color: #ff7b72; }
+.toast.success { border-left-color: var(--brand-bright); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
 @media (max-width: 720px) {
   .topbar { padding: 0 16px; }
   .topbar .tagline, #summary { display: none; }
   main { padding: 24px 16px; }
   .toolbar { align-items: flex-start; }
   .rule > header { flex-direction: column; }
-  .details, .form-grid { grid-template-columns: 1fr; }
+  .details, .form-grid, .section-grid { grid-template-columns: 1fr; }
   .actions { width: 100%; flex-wrap: wrap; }
+  .toasts { left: 16px; right: 16px; bottom: 16px; max-width: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

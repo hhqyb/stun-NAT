@@ -46,6 +46,33 @@ async function loadSession() {
   } catch {}
 }
 
+const toasts = document.querySelector('#toasts');
+const confirmDialog = document.querySelector('#confirmDialog');
+let lastLoadError = '';
+let lastWarning = '';
+
+function notify(message, kind = 'error') {
+  const toast = document.createElement('div');
+  toast.className = `toast ${kind}`;
+  toast.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+  toast.textContent = message;
+  toasts.append(toast);
+  while (toasts.children.length > 3) toasts.firstElementChild.remove();
+  setTimeout(() => toast.remove(), kind === 'error' ? 7000 : 4000);
+}
+
+function askConfirm(message) {
+  document.querySelector('#confirmMessage').textContent = message;
+  confirmDialog.returnValue = '';
+  confirmDialog.showModal();
+  return new Promise((resolve) => {
+    confirmDialog.addEventListener('close', () => resolve(confirmDialog.returnValue === 'ok'), { once: true });
+  });
+}
+
+document.querySelector('#confirmCancel').addEventListener('click', () => confirmDialog.close('cancel'));
+document.querySelector('#confirmOk').addEventListener('click', () => confirmDialog.close('ok'));
+
 function setMode() {
   const udp = form.protocol.value === 'udp';
   const bindOption = form.mode.querySelector('option[value="bind"]');
@@ -94,14 +121,20 @@ function createCard(rule) {
   card.viewer = new LogViewer(node.querySelector('.logs'), node.querySelector('.log-latest'));
   node.querySelector('details').addEventListener('toggle', (event) => { if (event.target.open) card.viewer.reveal(); });
   node.querySelector('.toggle').addEventListener('click', async () => {
-    try { await api(`/api/rules/${card.rule.id}/${card.rule.running ? 'stop' : 'start'}`, { method: 'POST' }); await load(); }
-    catch (error) { alert(error.message); }
+    try {
+      await api(`/api/rules/${card.rule.id}/${card.rule.running ? 'stop' : 'start'}`, { method: 'POST' });
+      notify(card.rule.running ? '规则已停止' : '规则已启动', 'success');
+      await load();
+    } catch (error) { notify(error.message); }
   });
   node.querySelector('.edit').addEventListener('click', () => openEditor(card.rule));
   node.querySelector('.delete').addEventListener('click', async () => {
-    if (!confirm(`删除规则“${card.rule.name}”？`)) return;
-    try { await api(`/api/rules/${card.rule.id}`, { method: 'DELETE' }); await load(); }
-    catch (error) { alert(error.message); }
+    if (!(await askConfirm(`删除规则“${card.rule.name}”？此操作不可撤销。`))) return;
+    try {
+      await api(`/api/rules/${card.rule.id}`, { method: 'DELETE' });
+      notify('规则已删除', 'success');
+      await load();
+    } catch (error) { notify(error.message); }
   });
   for (const [label] of detailsFor(rule)) {
     const field = document.createElement('div');
@@ -151,10 +184,15 @@ async function load() {
     const result = await api('/api/rules');
     if (sequence !== loadSequence) return;
     rules = result.rules;
+    lastLoadError = '';
     render();
+    if (result.warning && result.warning !== lastWarning) { lastWarning = result.warning; notify(result.warning); }
   } catch (error) {
     if (error.status === 401) return;
-    if (sequence === loadSequence) setText(document.querySelector('#summary'), error.message);
+    if (sequence === loadSequence) {
+      setText(document.querySelector('#summary'), error.message);
+      if (error.message !== lastLoadError) { lastLoadError = error.message; notify(error.message); }
+    }
   }
 }
 
@@ -203,8 +241,9 @@ form.addEventListener('submit', async (event) => {
   try {
     await api(form.id.value ? `/api/rules/${form.id.value}` : '/api/rules', { method: form.id.value ? 'PUT' : 'POST', body: JSON.stringify(data) });
     editor.close();
+    notify('规则已保存', 'success');
     await load();
-  } catch (error) { alert(error.message); }
+  } catch (error) { notify(error.message); }
 });
 document.querySelector('#logout').addEventListener('click', async (event) => {
   event.currentTarget.disabled = true;
