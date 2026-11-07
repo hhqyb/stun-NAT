@@ -9,6 +9,7 @@ import { createRouterMapper, RouterMappingTask } from './lib/router-mapping.js';
 import { RotatingLogStore, MAX_LOG_BYTES } from './lib/log-store.js';
 import { createAuth } from './lib/auth.js';
 import { base32Decode, generateSecret, totpUri, verifyTotp } from './lib/totp.js';
+import { createWebhookQueue } from './lib/webhook-queue.js';
 import { formatLogTime } from './public/log-time.js';
 import { APP_VERSION } from './public/version.js';
 
@@ -24,6 +25,9 @@ const stateDir = path.join(dataDir, 'state');
 const logDir = path.join(dataDir, 'logs');
 const runners = new Map();
 const mapRouter = createRouterMapper();
+const routerMappingPrefix = 'STUN-NAT ';
+const webhookGapMs = Number(process.env.STUNMAP_WEBHOOK_GAP_MS);
+const webhookQueue = createWebhookQueue({ minGapMs: Number.isFinite(webhookGapMs) && webhookGapMs >= 0 ? webhookGapMs : 1000 });
 const auth = createAuth({ username: adminUser, password: adminPassword });
 let totpState = { enabled: false, secret: '', enabledAt: '', lastUsedStep: -1 };
 let totpBroken = false;
@@ -330,7 +334,7 @@ async function readRuleState(id) {
 }
 
 class RuleRunner {
-  constructor(rule) { this.rule = rule; this.child = null; this.desired = false; this.logs = []; this.restarting = false; this.state = null; this.history = []; this.routerTask = new RouterMappingTask({ map: mapRouter, log: (level, message) => this.log(level, message) }); this.networkChecks = null; this.checkController = null; this.restartTimer = null; this.firewallPort = null; this.lastEndpoint = ''; this.lastWebhookKey = ''; this.lastWebhookAttempt = 0; this.lastProbeAt = 0; this.probeFailures = 0; this.health = { local: 'waiting', external: 'not-configured', verifiedAt: null, detail: '等待首个 STUN 心跳' }; }
+  constructor(rule) { this.rule = rule; this.child = null; this.desired = false; this.logs = []; this.restarting = false; this.state = null; this.history = []; this.webhookPending = ''; this.routerTask = new RouterMappingTask({ map: mapRouter, remove: mapRouter, log: (level, message) => this.log(level, message) }); this.networkChecks = null; this.checkController = null; this.restartTimer = null; this.firewallPort = null; this.lastEndpoint = ''; this.lastWebhookKey = ''; this.lastWebhookAttempt = 0; this.lastProbeAt = 0; this.probeFailures = 0; this.health = { local: 'waiting', external: 'not-configured', verifiedAt: null, detail: '等待首个 STUN 心跳' }; }
   get routerState() { return this.routerTask.state; }
   log(level, message) {
     const entry = { id: crypto.randomUUID(), at: formatLogTime(), level, message: String(message).trim() };
@@ -430,18 +434,22 @@ class RuleRunner {
       this.probeFailures++; this.health = { ...this.health, external: 'unhealthy', externalVerifiedAt: new Date().toISOString(), externalDetail: error.message }; this.log('error', `外部探针失败（${this.probeFailures}/2）：${error.message}`); if (this.probeFailures >= 2) this.restart('连续两次外部通道探测失败');
     }
   }
-  async notifyWebhook(state, signal) {
+  notifyWebhook(state, signal) {
     if (!this.rule.webhookUrl || this.routerTask.inFlight) return;
     const key = `${state.mappingChangedAt || state.updatedAt}:${state.publicAddress}:${state.publicPort}`;
-    if (this.lastWebhookKey === key || Date.now() - this.lastWebhookAttempt < 5000) return;
+    if (this.lastWebhookKey === key || this.webhookPending === key || Date.now() - this.lastWebhookAttempt < 5000) return;
     this.lastWebhookAttempt = Date.now();
-    try {
+    this.webhookPending = key;
+    webhookQueue(async () => {
+      if (!this.desired) return;
+      signal?.throwIfAborted();
       const { url, options } = webhookRequest(this.rule, state, this.routerState);
       options.signal = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
       const response = await fetch(url, options); await response.body?.cancel(); if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      if (signal.aborted) return;
+      if (signal.aborted || !this.desired) return;
       this.lastWebhookKey = key; this.log('info', `映射 Webhook 调用成功：${this.rule.webhookMethod.toUpperCase()} ${this.rule.webhookUrl}`);
-    } catch (error) { if (!signal.aborted) this.log('error', `映射 Webhook 调用失败：${error.message}`); }
+    }).catch((error) => { if (!signal.aborted) this.log('error', `映射 Webhook 调用失败：${error.message}`); })
+      .finally(() => { if (this.webhookPending === key) this.webhookPending = null; });
   }
   runNetworkChecks(state) {
     if (this.networkChecks) return;
@@ -454,6 +462,29 @@ class RuleRunner {
     this.networkChecks = task;
   }
   snapshot() { return { ...this.rule, running: Boolean(this.child) && this.desired, state: this.state, routerState: this.routerState, health: this.health, history: this.history.slice(), logs: this.logs.slice(-80) }; }
+}
+
+const routerCleanups = new Map();
+
+function ensureRouterCleanup(privateAddress) {
+  if (!routerCleanups.has(privateAddress)) {
+    const task = mapRouter({ type: 'cleanup', privateAddress, prefix: routerMappingPrefix })
+      .then((result) => { console.log(`UPnP 旧映射清理（${privateAddress}）：扫描 ${result.scanned} 条，删除 ${result.deleted} 条${result.failed ? `，失败 ${result.failed} 条` : ''}${result.warning ? `；${result.warning}` : ''}`); })
+      .catch((error) => { console.error(`UPnP 旧映射清理失败（${privateAddress}）：${error.message}`); });
+    routerCleanups.set(privateAddress, task);
+  }
+  return routerCleanups.get(privateAddress);
+}
+
+async function prepareRouterCleanup() {
+  const database = await loadDatabase();
+  const addresses = new Set();
+  for (const rule of database.rules) {
+    if (rule.routerMapping !== 'upnp') continue;
+    const state = await readRuleState(rule.id);
+    if (state?.privateAddress) addresses.add(state.privateAddress);
+  }
+  for (const address of addresses) ensureRouterCleanup(address);
 }
 
 let reconciling = false;
@@ -470,8 +501,10 @@ async function reconcileRouterMappings() {
       runner.observeState(state);
       if (runner.restarting) continue;
       runner.ensureFirewallRule(state.privatePort);
+      if (runner.rule.routerMapping === 'upnp' && state.privateAddress) await ensureRouterCleanup(state.privateAddress);
+      if (runner.restarting) continue;
       // Router I/O runs in its own shared queue, never blocking heartbeats or other rules.
-      runner.routerTask.update({ type: runner.rule.routerMapping, protocol: runner.rule.protocol, privateAddress: state.privateAddress, privatePort: state.privatePort, publicAddress: state.publicAddress, description: `STUN-NAT ${runner.rule.name}` });
+      runner.routerTask.update({ type: runner.rule.routerMapping, protocol: runner.rule.protocol, privateAddress: state.privateAddress, privatePort: state.privatePort, publicAddress: state.publicAddress, publicPort: state.publicPort, description: `STUN-NAT ${runner.rule.name}` });
       runner.runNetworkChecks(state);
     }
   } finally { reconciling = false; }
@@ -715,7 +748,7 @@ const server = http.createServer(async (req, res) => {
   } catch (error) { json(res, 400, { error: error.message }); }
 });
 
-await ensureStorage(); await refreshRunners(); setInterval(() => reconcileRouterMappings().catch((error) => console.error('规则状态更新失败：', error.message)), 1000).unref();
+await ensureStorage(); await prepareRouterCleanup(); await refreshRunners(); setInterval(() => reconcileRouterMappings().catch((error) => console.error('规则状态更新失败：', error.message)), 1000).unref();
 setInterval(() => auth.cleanup(), 10 * 60 * 1000).unref();
 server.listen(port, '0.0.0.0', () => console.log(`STUN-NAT Console ${APP_VERSION} listening on :${port}`));
 process.on('SIGTERM', () => { for (const runner of runners.values()) runner.stop(); server.close(() => process.exit(0)); });

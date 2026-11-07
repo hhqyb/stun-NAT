@@ -119,6 +119,49 @@ test('UPnP does not guess the first host interface when STUN has not reported it
   for (const address of [undefined, '', '0.0.0.0', '::1']) await assert.rejects(client.map({ ...input, privateAddress: address }), /实际局域网 IPv4/);
 });
 
+test('UPnP cleanup enumerates the table and deletes only matching descriptions', async () => {
+  let entries = [
+    { description: 'STUN-NAT web', externalPort: '40000', protocol: 'TCP' },
+    { description: 'tailscale', externalPort: '41641', protocol: 'UDP' },
+    { description: 'STUN-NAT game', externalPort: '40002', protocol: 'UDP' }
+  ];
+  const deleted = [];
+  const client = new UpnpClient({ discover: async () => 'http://192.168.10.1/igd.xml', request: async (url, options) => {
+    if (options.method !== 'POST') return { status: 200, text: description };
+    const action = actionOf(options);
+    if (action === 'GetGenericPortMappingEntry') {
+      const index = Number(options.body.match(/<NewPortMappingIndex>(\d+)<\/NewPortMappingIndex>/)?.[1]);
+      if (index >= entries.length) return fault(713, 'SpecifiedArrayIndexInvalid');
+      const entry = entries[index];
+      return { status: 200, text: `<NewExternalPort>${entry.externalPort}</NewExternalPort><NewProtocol>${entry.protocol}</NewProtocol><NewPortMappingDescription>${entry.description}</NewPortMappingDescription>` };
+    }
+    if (action === 'DeletePortMapping') {
+      const externalPort = options.body.match(/<NewExternalPort>(\d+)<\/NewExternalPort>/)?.[1];
+      const protocol = options.body.match(/<NewProtocol>([^<]+)<\/NewProtocol>/)?.[1];
+      deleted.push(`${protocol}:${externalPort}`);
+      entries = entries.filter((entry) => !(entry.externalPort === externalPort && entry.protocol === protocol));
+      return { status: 200, text: '' };
+    }
+    throw new Error(`unexpected action ${action}`);
+  } });
+  const result = await client.cleanup({ privateAddress: input.privateAddress, prefix: 'STUN-NAT ' });
+  assert.deepEqual(result, { scanned: 3, deleted: 2, failed: 0, warning: '' });
+  assert.deepEqual(entries.map((entry) => entry.description), ['tailscale']);
+  assert.deepEqual(deleted, ['TCP:40000', 'UDP:40002']);
+});
+
+test('UPnP remove deletes a mapping and treats a missing entry as already clean', async () => {
+  let calls = 0;
+  const client = new UpnpClient({ discover: async () => 'http://192.168.10.1/igd.xml', request: async (url, options) => {
+    if (options.method !== 'POST') return { status: 200, text: description };
+    calls++;
+    return options.body.includes('<NewExternalPort>40000') ? { status: 200, text: '' } : fault(714, 'NoSuchEntryInArray');
+  } });
+  assert.equal(await client.remove({ privateAddress: input.privateAddress, protocol: 'tcp', externalPort: 40000 }), true);
+  assert.equal(await client.remove({ privateAddress: input.privateAddress, protocol: 'tcp', externalPort: 40001 }), false);
+  assert.equal(calls, 2);
+});
+
 test('HTTP deadline includes an unfinished response body and supports cancellation', async (t) => {
   const server = http.createServer((req, res) => { res.writeHead(200); res.write('<root>'); });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
@@ -139,6 +182,21 @@ test('all rules share a single router queue, including after a failed operation'
   const results = await Promise.allSettled(Array.from({ length: 22 }, (_, i) => map({ ...input, privatePort: 40000 + i })));
   assert.equal(maxActive, 1); assert.equal(results[0].status, 'rejected');
   assert.equal(results.filter((item) => item.status === 'fulfilled').length, 21);
+});
+
+test('router mapper serializes cleanup, removal and mapping through one queue', async () => {
+  let active = 0, maxActive = 0; const order = [];
+  const upnp = {
+    cleanup: async () => { active++; maxActive = Math.max(maxActive, active); order.push('cleanup'); await delay(1); active--; return { scanned: 0, deleted: 0 }; },
+    remove: async () => { active++; maxActive = Math.max(maxActive, active); order.push('remove'); await delay(1); active--; },
+    map: async () => { active++; maxActive = Math.max(maxActive, active); order.push('map'); await delay(1); active--; return result; }
+  };
+  const map = createRouterMapper({ upnp });
+  await map({ type: 'cleanup', privateAddress: input.privateAddress });
+  await map({ type: 'remove', protocol: 'tcp', privateAddress: input.privateAddress, externalPort: 40000 });
+  await map({ ...input });
+  assert.deepEqual(order, ['cleanup', 'remove', 'map']);
+  assert.equal(maxActive, 1);
 });
 
 test('repeated maintenance ticks cannot overlap a pending mapping', async () => {
@@ -174,12 +232,36 @@ test('finite leases renew at half-life; permanent leases are periodically rechec
   now += 1800000; await task.update(input); assert.equal(calls, 4);
 });
 
-test('changing the local channel invalidates the mapping while a public IP change only updates comparison', async () => {
+test('changing the local channel or public endpoint rebuilds the mapping', async () => {
   let calls = 0; const task = new RouterMappingTask({ map: async () => { calls++; return result; } });
   await task.update(input); await task.update({ ...input, publicAddress: result.externalAddress });
-  assert.equal(calls, 1); assert.equal(task.state.matchesStunAddress, true);
-  await task.update({ ...input, privateAddress: '192.168.10.21' }); assert.equal(calls, 2);
-  task.reset(); await task.update({ ...input, type: 'none' }); assert.equal(calls, 2); assert.equal(task.state, null);
+  assert.equal(calls, 2); assert.equal(task.state.matchesStunAddress, true);
+  await task.update({ ...input, privateAddress: '192.168.10.21' }); assert.equal(calls, 3);
+  task.reset(); await task.update({ ...input, type: 'none' }); assert.equal(calls, 3); assert.equal(task.state, null);
+});
+
+test('mapping changes remove the old UPnP mapping before adding the new one', async () => {
+  const events = [];
+  const task = new RouterMappingTask({
+    map: async (request) => { events.push(`map:${request.privatePort}`); return { ...result, externalPort: request.privatePort }; },
+    remove: async (request) => { events.push(`remove:${request.externalPort}`); }
+  });
+  await task.update(input);
+  await task.update({ ...input, privatePort: 40001 });
+  assert.deepEqual(events, ['map:40000', 'remove:40000', 'map:40001']);
+});
+
+test('public endpoint changes and resets remove the previous UPnP mapping', async () => {
+  const events = [];
+  const task = new RouterMappingTask({
+    map: async (request) => { events.push(`map:${request.publicPort ?? ''}`); return { ...result, externalPort: request.privatePort }; },
+    remove: async (request) => { events.push(`remove:${request.externalPort}`); }
+  });
+  await task.update(input);
+  await task.update({ ...input, publicAddress: '198.51.100.9', publicPort: 12345 });
+  task.reset();
+  await Promise.resolve();
+  assert.deepEqual(events, ['map:', 'remove:40000', 'map:12345', 'remove:40000']);
 });
 
 test('stop/reset cancels queued work and ignores late success or failure from an old channel', async () => {
