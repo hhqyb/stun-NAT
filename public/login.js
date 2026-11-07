@@ -7,6 +7,8 @@ const toggle = document.querySelector('#passwordToggle');
 const submit = document.querySelector('#loginSubmit');
 const errorBox = document.querySelector('#loginError');
 const capsHint = document.querySelector('#capsHint');
+const codeField = document.querySelector('#codeField');
+const codeInput = document.querySelector('#code');
 document.querySelector('#version').textContent = APP_VERSION;
 
 function destination() {
@@ -58,20 +60,31 @@ form.addEventListener('submit', async (event) => {
     (account ? password : username).focus();
     return;
   }
+  const code = codeInput.value.trim();
+  if (!codeField.hidden && !/^\d{6}$/.test(code)) {
+    showError('请输入 6 位动态验证码');
+    codeInput.focus();
+    return;
+  }
   setBusy(true);
   try {
     const response = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username: account, password: password.value })
+      body: JSON.stringify({ username: account, password: password.value, code })
     });
     if (response.ok) {
       location.replace(destination());
       return;
     }
     const body = await response.json().catch(() => ({}));
+    if (body.totpRequired) {
+      codeField.hidden = false;
+      codeInput.focus();
+      codeInput.select();
+    }
     showError(body.error || '登录失败，请重试');
-    password.select();
+    if (!body.totpRequired) password.select();
   } catch {
     showError('无法连接到服务器，请检查网络后重试');
   } finally {

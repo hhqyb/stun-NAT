@@ -8,6 +8,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createRouterMapper, RouterMappingTask } from './lib/router-mapping.js';
 import { RotatingLogStore, MAX_LOG_BYTES } from './lib/log-store.js';
 import { createAuth } from './lib/auth.js';
+import { base32Decode, generateSecret, totpUri, verifyTotp } from './lib/totp.js';
 import { formatLogTime } from './public/log-time.js';
 import { APP_VERSION } from './public/version.js';
 
@@ -18,11 +19,15 @@ const port = Number(process.env.PORT || 16888);
 const adminUser = process.env.STUNMAP_ADMIN_USER || 'admin';
 const adminPassword = process.env.STUNMAP_ADMIN_PASSWORD || 'change-me-before-deploying';
 const databasePath = path.join(dataDir, 'rules.json');
+const securityPath = path.join(dataDir, 'security.json');
 const stateDir = path.join(dataDir, 'state');
 const logDir = path.join(dataDir, 'logs');
 const runners = new Map();
 const mapRouter = createRouterMapper();
 const auth = createAuth({ username: adminUser, password: adminPassword });
+let totpState = { enabled: false, secret: '', enabledAt: '', lastUsedStep: -1 };
+let totpBroken = false;
+let pendingTotp = null;
 const publicFiles = new Set(['/login.html', '/login.js', '/login.css', '/app.css', '/version.js', '/favicon.svg']);
 const contentSecurityPolicy = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 let logStore;
@@ -45,7 +50,8 @@ function requestIsSecure(req) {
 }
 
 function authenticate(req) {
-  if (auth.verifyBasic(req.headers.authorization)) return { mode: 'basic', username: adminUser };
+  if (totpBroken) return null;
+  if (!totpState.enabled && auth.verifyBasic(req.headers.authorization)) return { mode: 'basic', username: adminUser };
   const token = auth.parseCookies(req.headers.cookie)[auth.COOKIE_NAME];
   return auth.readSession(token) ? { mode: 'session', username: adminUser } : null;
 }
@@ -60,8 +66,38 @@ function sameOrigin(req) {
   } catch { return false; }
 }
 
+async function loadSecurity() {
+  let text;
+  try { text = await fsp.readFile(securityPath, 'utf8'); }
+  catch (error) {
+    if (error.code === 'ENOENT') return;
+    totpBroken = true;
+    console.error(`两步验证配置读取失败，请修复或删除 ${securityPath}：${error.message}`);
+    return;
+  }
+  try {
+    const data = JSON.parse(text);
+    if (data?.totp?.enabled) {
+      const secret = String(data.totp.secret || '');
+      if (!secret) throw new Error('缺少 TOTP 密钥');
+      base32Decode(secret);
+      totpState = { enabled: true, secret, enabledAt: String(data.totp.enabledAt || ''), lastUsedStep: Number.isInteger(data.totp.lastUsedStep) ? data.totp.lastUsedStep : -1 };
+    }
+  } catch (error) {
+    totpBroken = true;
+    console.error(`两步验证配置读取失败，请修复或删除 ${securityPath}：${error.message}`);
+  }
+}
+
+async function saveSecurity(state) {
+  const temp = `${securityPath}.tmp`;
+  await fsp.writeFile(temp, `${JSON.stringify({ version: 1, totp: { enabled: state.enabled, secret: state.secret, enabledAt: state.enabledAt, lastUsedStep: state.lastUsedStep } }, null, 2)}\n`, { mode: 0o600 });
+  await fsp.rename(temp, securityPath);
+}
+
 async function ensureStorage() {
   await fsp.mkdir(stateDir, { recursive: true });
+  await loadSecurity();
   logStore = new RotatingLogStore(logDir, {
     maxTotalBytes: Number(process.env.STUNMAP_LOG_MAX_BYTES || MAX_LOG_BYTES),
     ...(process.env.STUNMAP_LOG_FILE_BYTES ? { maxFileBytes: Number(process.env.STUNMAP_LOG_FILE_BYTES) } : {})
@@ -500,6 +536,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && url.pathname === '/healthz') return json(res, 200, { status: 'ok', version: APP_VERSION, uptimeSeconds: Math.round(process.uptime()) });
     if (req.method === 'POST' && url.pathname === '/api/auth/login') {
+      if (totpBroken) return json(res, 503, { error: '两步验证配置损坏，请修复或删除 data/security.json' });
       const address = req.socket.remoteAddress || 'unknown';
       const retryAfter = auth.blockedFor(address);
       if (retryAfter) { res.setHeader('retry-after', String(retryAfter)); return json(res, 429, { error: `登录尝试次数过多，请 ${retryAfter} 秒后再试` }); }
@@ -508,6 +545,19 @@ const server = http.createServer(async (req, res) => {
         auth.recordFailure(address);
         await new Promise((resolve) => setTimeout(resolve, 300));
         return json(res, 401, { error: '账号或密码不正确' });
+      }
+      if (totpState.enabled) {
+        const code = String(body?.code || '').trim();
+        if (!code) return json(res, 401, { error: '请输入动态验证码', totpRequired: true });
+        const step = verifyTotp(totpState.secret, code);
+        if (step === null) {
+          auth.recordFailure(address);
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          return json(res, 401, { error: '动态验证码不正确', totpRequired: true });
+        }
+        if (step <= totpState.lastUsedStep) return json(res, 401, { error: '验证码已使用，请等待下一个验证码', totpRequired: true });
+        totpState = { ...totpState, lastUsedStep: step };
+        saveSecurity(totpState).catch((error) => console.error('两步验证状态写入失败：', error.message));
       }
       auth.resetFailures(address);
       res.setHeader('set-cookie', auth.sessionCookie(auth.createSession(), { secure: requestIsSecure(req) }));
@@ -527,6 +577,34 @@ const server = http.createServer(async (req, res) => {
     }
     if (session.mode === 'session' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !sameOrigin(req)) return json(res, 403, { error: '请求来源无效' });
     if (req.method === 'GET' && url.pathname === '/api/auth/session') return json(res, 200, { username: session.username });
+    if (req.method === 'GET' && url.pathname === '/api/auth/totp') return json(res, 200, { enabled: totpState.enabled, broken: totpBroken, enabledAt: totpState.enabledAt || null });
+    if (req.method === 'POST' && url.pathname === '/api/auth/totp/setup') {
+      if (totpState.enabled) return json(res, 409, { error: '两步验证已启用' });
+      const secret = generateSecret();
+      pendingTotp = { secret, createdAt: Date.now() };
+      return json(res, 200, { secret, uri: totpUri(secret, { account: adminUser }) });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/auth/totp/enable') {
+      const body = await parseBody(req);
+      if (totpState.enabled) return json(res, 409, { error: '两步验证已启用' });
+      if (!pendingTotp || Date.now() - pendingTotp.createdAt > 10 * 60 * 1000) { pendingTotp = null; return json(res, 400, { error: '请重新生成两步验证密钥' }); }
+      if (verifyTotp(pendingTotp.secret, body?.code) === null) return json(res, 400, { error: '动态验证码不正确' });
+      const next = { enabled: true, secret: pendingTotp.secret, enabledAt: new Date().toISOString(), lastUsedStep: -1 };
+      await saveSecurity(next);
+      totpState = next; pendingTotp = null;
+      return json(res, 200, { enabled: true, enabledAt: next.enabledAt });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/auth/totp/disable') {
+      const body = await parseBody(req);
+      if (!totpState.enabled) return json(res, 400, { error: '两步验证未启用' });
+      const step = verifyTotp(totpState.secret, body?.code);
+      if (step === null) return json(res, 400, { error: '动态验证码不正确' });
+      if (step <= totpState.lastUsedStep) return json(res, 400, { error: '验证码已使用，请等待下一个验证码' });
+      const next = { enabled: false, secret: '', enabledAt: '', lastUsedStep: -1 };
+      await saveSecurity(next);
+      totpState = next; pendingTotp = null;
+      return json(res, 200, { enabled: false });
+    }
     if (url.pathname === '/login.html') { res.writeHead(303, { location: '/' }); return res.end(); }
     if (req.method === 'POST' && url.pathname === '/api/webhook/test') {
       const input = await parseBody(req);

@@ -31,6 +31,7 @@
 - 可选独立公网探针：TCP 验证通道握手，UDP 验证映射引擎健康回显；两者均不依赖目标服务是否启动。
 - 映射成功或公网端点变化后，可调用指定 GET 或 POST Webhook；保活心跳不会重复触发。
 - 登录页与控制台顶栏显示当前版本号（`v1.00`）。
+- 支持 TOTP 两步验证：可在控制台「安全」中启用或关闭，启用后登录需要密码和 6 位动态验证码，HTTP Basic Auth 同时停用。
 
 映射核心使用 [NATMap](https://github.com/heiher/natmap) 的 MIT 许可实现，管理服务、规则存储、路由映射适配和界面为本项目独立编写。UPnP 是本项目的上级路由映射方式，不是 STUN/流量转发引擎；默认选择 UPnP 不等于停用底层 NATMap 引擎。
 
@@ -66,7 +67,10 @@ docker pull ghcr.io/hhqyb/stun-nat:latest
 
 - 未登录访问管理页面会跳转到内置登录页；登录成功后签发 `HttpOnly`、`SameSite=Strict` 的会话 Cookie，有效期 12 小时。会话保存在内存中，服务重启后需重新登录。
 - 同一来源连续输错 5 次密码会暂时锁定 5 分钟，成功登录后计数清零。
-- 脚本或 API 客户端仍可使用 HTTP Basic Auth，凭据与登录页一致。
+- 未启用两步验证时，脚本或 API 客户端仍可使用 HTTP Basic Auth，凭据与登录页一致。
+- 控制台右上角「安全」可启用 TOTP 两步验证。设置页会显示密钥和 `otpauth://` 链接，可手动粘贴到身份验证器；启用后登录需要密码和动态验证码。
+- **启用两步验证后 HTTP Basic Auth 会被停用**，API 客户端需先通过 `/api/auth/login` 提交密码和验证码获取会话 Cookie；在控制台关闭两步验证后 Basic Auth 恢复。
+- 两步验证密钥保存在 `data/security.json`（权限 0600），不随规则导出。身份验证器丢失时，在服务器上删除该文件并重启服务即可关闭两步验证；文件损坏时服务会拒绝登录，直到手动修复或删除。
 - `GET /healthz` 无需认证，仅返回服务状态、版本号和运行时间，用于容器健康检查与外部监控。
 - 管理页面带 CSP，页面与 API 均返回 `X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff` 等安全响应头；通过反向代理启用 HTTPS 且传递 `X-Forwarded-Proto: https` 时，会话 Cookie 自动附带 `Secure`。
 
@@ -166,4 +170,4 @@ STUNMAP_ADMIN_PASSWORD=dev-password npm test
 STUNMAP_ADMIN_PASSWORD=dev-password NATMAP_BIN=/path/to/natmap npm start
 ```
 
-测试覆盖认证、规则校验、热更新不重启、规则库损坏备份、并发写串行化、健康检查、ETag/304、日志下载与筛选、日志文件枚举与清理、规则导入导出、Webhook 测试与自定义请求头、模板与复制、UPnP 默认值及显式配置保留、创建/停止/删除、东八区日志时间、跨规则日志轮转与总上限、UPnP 发现与响应兼容、源地址选择、超时、请求串行化、退避、续约及取消。未设置 `NATMAP_BIN` 时会跳过两项真实引擎转发测试。浏览器回归会自动寻找常见位置的 Chrome/Chromium，也可设置 `CHROME_BIN=/path/to/chrome`，检查展开日志、滚动、选区、焦点、暂停/恢复跟随及编辑默认值；没有浏览器时仅跳过该项。真实公网 NAT 映射还必须在目标网络中验证，不能以本机回环结果代替。
+测试覆盖认证、TOTP 生成与校验、两步验证登录与重放保护、规则校验、热更新不重启、规则库损坏备份、并发写串行化、健康检查、ETag/304、日志下载与筛选、日志文件枚举与清理、规则导入导出、Webhook 测试与自定义请求头、模板与复制、UPnP 默认值及显式配置保留、创建/停止/删除、东八区日志时间、跨规则日志轮转与总上限、UPnP 发现与响应兼容、源地址选择、超时、请求串行化、退避、续约及取消。未设置 `NATMAP_BIN` 时会跳过两项真实引擎转发测试。浏览器回归会自动寻找常见位置的 Chrome/Chromium，也可设置 `CHROME_BIN=/path/to/chrome`，检查展开日志、滚动、选区、焦点、暂停/恢复跟随及编辑默认值；没有浏览器时仅跳过该项。真实公网 NAT 映射还必须在目标网络中验证，不能以本机回环结果代替。

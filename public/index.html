@@ -14,6 +14,7 @@
       <div class="topbar-actions">
         <div id="summary">加载中</div>
         <span class="account-name" id="user" hidden></span>
+        <button type="button" class="ghost" id="security">安全</button>
         <button type="button" class="ghost" id="logout">退出登录</button>
       </div>
     </header>
@@ -95,6 +96,25 @@
       </div>
       <div class="files-list" id="filesList"></div>
       <footer><button type="button" class="secondary" id="filesClose">关闭</button><button type="button" class="danger" id="filesClear">清空日志</button></footer>
+    </dialog>
+    <dialog id="securityDialog" class="security-dialog">
+      <div class="confirm-body">
+        <h2>账户安全</h2>
+        <p id="totpStatus">加载中…</p>
+        <div id="totpSetup" hidden>
+          <p class="totp-tip">在身份验证器中手动添加以下密钥，或复制 otpauth 链接导入。验证码每 30 秒更新。</p>
+          <code class="totp-secret" id="totpSecret"></code>
+          <div class="input-row"><input id="totpUri" readonly aria-label="otpauth 链接"><button type="button" class="secondary" id="copyTotpUri">复制</button></div>
+          <label>输入验证器中的 6 位验证码<input id="totpEnableCode" inputmode="numeric" maxlength="6" autocomplete="one-time-code"></label>
+        </div>
+        <label id="totpDisableField" hidden>输入当前 6 位验证码<input id="totpDisableCode" inputmode="numeric" maxlength="6" autocomplete="one-time-code"></label>
+      </div>
+      <footer>
+        <button type="button" class="secondary" id="securityClose">关闭</button>
+        <button type="button" id="totpStart" hidden>启用两步验证</button>
+        <button type="button" id="totpConfirm" hidden>确认启用</button>
+        <button type="button" class="danger" id="totpDisable" hidden>关闭两步验证</button>
+      </footer>
     </dialog>
     <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
     <template id="cardTemplate">

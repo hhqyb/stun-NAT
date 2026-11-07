@@ -178,6 +178,7 @@ body.auth::before {
 }
 .field input:hover { border-color: #b9c4d4; }
 .field input:focus { outline: none; border-color: var(--brand); background: #fff; box-shadow: var(--ring); }
+.auth-code input { font-family: var(--font-mono); letter-spacing: 0.18em; }
 
 .password { position: relative; }
 .password input { padding-right: 68px; }

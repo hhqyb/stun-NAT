@@ -50,6 +50,17 @@ async function loadSession() {
 const toasts = document.querySelector('#toasts');
 const confirmDialog = document.querySelector('#confirmDialog');
 const filesDialog = document.querySelector('#filesDialog');
+const securityDialog = document.querySelector('#securityDialog');
+const totpStatus = document.querySelector('#totpStatus');
+const totpSetup = document.querySelector('#totpSetup');
+const totpSecret = document.querySelector('#totpSecret');
+const totpUriInput = document.querySelector('#totpUri');
+const totpEnableCode = document.querySelector('#totpEnableCode');
+const totpDisableField = document.querySelector('#totpDisableField');
+const totpDisableCode = document.querySelector('#totpDisableCode');
+const totpStart = document.querySelector('#totpStart');
+const totpConfirm = document.querySelector('#totpConfirm');
+const totpDisable = document.querySelector('#totpDisable');
 let filesRule = null;
 let lastLoadError = '';
 let lastWarning = '';
@@ -239,6 +250,39 @@ function openLogFiles(rule) {
   refreshLogFiles();
 }
 
+function setTotpStatus(message, error = false) {
+  totpStatus.textContent = message;
+  totpStatus.classList.toggle('error', error);
+}
+
+async function refreshSecurity() {
+  totpStatus.classList.remove('error');
+  totpStatus.textContent = '加载中…';
+  totpSetup.hidden = true;
+  totpConfirm.hidden = true;
+  totpDisableField.hidden = true;
+  totpStart.hidden = true;
+  totpDisable.hidden = true;
+  totpEnableCode.value = '';
+  totpDisableCode.value = '';
+  try {
+    const state = await api('/api/auth/totp');
+    if (state.enabled) {
+      setTotpStatus(`两步验证已启用${state.enabledAt ? `（${localTime(state.enabledAt)}）` : ''}。登录需要密码和动态验证码，HTTP Basic Auth 已停用。`);
+      totpDisable.hidden = false;
+      totpDisableField.hidden = false;
+    } else {
+      setTotpStatus('两步验证未启用。启用后登录需要密码和动态验证码，HTTP Basic Auth 将被停用。');
+      totpStart.hidden = false;
+    }
+  } catch (error) { setTotpStatus(error.message, true); }
+}
+
+function openSecurity() {
+  securityDialog.showModal();
+  refreshSecurity();
+}
+
 function renderHistory(node, rule) {
   const list = node.querySelector('.history');
   const history = rule.history || [];
@@ -371,6 +415,48 @@ document.querySelector('#importFile').addEventListener('change', async (event) =
 document.querySelector('#ruleTemplate').addEventListener('change', (event) => applyRuleTemplate(event.target.value));
 document.querySelector('#webhookPreset').addEventListener('change', (event) => applyWebhookPreset(event.target.value));
 document.querySelector('#filesClose').addEventListener('click', () => filesDialog.close());
+document.querySelector('#security').addEventListener('click', openSecurity);
+document.querySelector('#securityClose').addEventListener('click', () => securityDialog.close());
+document.querySelector('#totpStart').addEventListener('click', async () => {
+  try {
+    const setup = await api('/api/auth/totp/setup', { method: 'POST' });
+    totpSecret.textContent = setup.secret;
+    totpUriInput.value = setup.uri;
+    totpSetup.hidden = false;
+    totpStart.hidden = true;
+    totpConfirm.hidden = false;
+    totpEnableCode.value = '';
+    setTotpStatus('在身份验证器中添加密钥，然后输入当前验证码确认。');
+    totpEnableCode.focus();
+  } catch (error) { setTotpStatus(error.message, true); }
+});
+document.querySelector('#totpConfirm').addEventListener('click', async () => {
+  const code = totpEnableCode.value.trim();
+  if (!/^\d{6}$/.test(code)) { setTotpStatus('请输入 6 位动态验证码', true); totpEnableCode.focus(); return; }
+  try {
+    await api('/api/auth/totp/enable', { method: 'POST', body: JSON.stringify({ code }) });
+    await refreshSecurity();
+    setTotpStatus('两步验证已启用。下次登录将需要动态验证码。');
+  } catch (error) { setTotpStatus(error.message, true); }
+});
+document.querySelector('#totpDisable').addEventListener('click', async () => {
+  const code = totpDisableCode.value.trim();
+  if (!/^\d{6}$/.test(code)) { setTotpStatus('请输入 6 位动态验证码', true); totpDisableCode.focus(); return; }
+  try {
+    await api('/api/auth/totp/disable', { method: 'POST', body: JSON.stringify({ code }) });
+    await refreshSecurity();
+    setTotpStatus('两步验证已关闭，HTTP Basic Auth 已恢复。');
+  } catch (error) { setTotpStatus(error.message, true); }
+});
+document.querySelector('#copyTotpUri').addEventListener('click', async () => {
+  const button = document.querySelector('#copyTotpUri');
+  try {
+    await navigator.clipboard.writeText(totpUriInput.value);
+    const label = button.textContent;
+    button.textContent = '已复制';
+    setTimeout(() => { button.textContent = label; }, 1500);
+  } catch { totpUriInput.select(); }
+});
 document.querySelector('#filesClear').addEventListener('click', async () => {
   if (!filesRule) return;
   if (!(await askConfirm(`清空规则“${filesRule.name}”的所有日志文件？历史归档和当前日志都会被删除。`))) return;
