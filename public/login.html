@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#18212f">
+    <title>登录 · STUN-NAT</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="stylesheet" href="/app.css">
+    <link rel="stylesheet" href="/login.css">
+  </head>
+  <body class="auth">
+    <main class="auth-shell">
+      <section class="auth-intro" aria-label="产品介绍">
+        <div class="auth-logo" aria-hidden="true">
+          <svg viewBox="0 0 32 32" fill="none">
+            <circle cx="8" cy="24" r="3.2" fill="#fff"></circle>
+            <circle cx="24" cy="8" r="3.2" fill="#fff"></circle>
+            <path d="M10.7 21.3C14.3 17.7 17.7 14.3 21.3 10.7" stroke="#fff" stroke-width="2.2" stroke-linecap="round"></path>
+            <path d="M17.6 9.4h6.2v6.2" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" opacity=".65"></path>
+          </svg>
+        </div>
+        <div class="auth-intro-text">
+          <p class="auth-eyebrow">STUN × NAT 控制台</p>
+          <h1>STUN-NAT <span class="auth-version" id="version"></span></h1>
+          <p class="auth-tagline">让内网服务拥有随时变化的公网入口。用规则维护 STUN 映射、UPnP 路由与实时日志。</p>
+        </div>
+        <ul class="auth-points">
+          <li><strong>动态端口映射</strong><span>持续保活，公网端口变化自动更新</span></li>
+          <li><strong>UPnP / NAT-PMP</strong><span>自动完成上级路由的端口转发</span></li>
+          <li><strong>运行可观测</strong><span>心跳健康、外部探针与集中日志</span></li>
+        </ul>
+        <p class="auth-caption">数据保存在本机 · 公网端口不可固定</p>
+      </section>
+      <section class="auth-card">
+        <form id="loginForm" class="auth-form" novalidate>
+          <header class="auth-head">
+            <h2>登录控制台</h2>
+            <p>使用管理员账号继续</p>
+          </header>
+          <label class="field">
+            <span class="field-label">管理员账号</span>
+            <input id="username" name="username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" required autofocus>
+          </label>
+          <label class="field">
+            <span class="field-label">密码</span>
+            <div class="password">
+              <input id="password" name="password" type="password" autocomplete="current-password" required>
+              <button type="button" class="password-toggle" id="passwordToggle" aria-pressed="false">显示</button>
+            </div>
+          </label>
+          <p class="auth-hint" id="capsHint" hidden>大写锁定键已开启</p>
+          <p class="auth-error" id="loginError" role="alert" hidden></p>
+          <button type="submit" class="auth-submit" id="loginSubmit">登录</button>
+          <p class="auth-foot">会话有效期 12 小时 · 连续输错 5 次将暂时锁定</p>
+        </form>
+      </section>
+    </main>
+    <script type="module" src="/login.js"></script>
+  </body>
+</html>

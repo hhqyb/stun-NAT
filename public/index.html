@@ -3,13 +3,19 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#18212f">
     <title>STUN-NAT Console</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="stylesheet" href="/app.css">
   </head>
   <body>
     <header class="topbar">
-      <div><strong>STUN-NAT</strong><span> 动态端口穿透</span></div>
-      <div id="summary">加载中</div>
+      <div class="brand"><strong>STUN-NAT</strong><span class="version" id="version"></span><span class="tagline">动态端口穿透</span></div>
+      <div class="topbar-actions">
+        <div id="summary">加载中</div>
+        <span class="account-name" id="user" hidden></span>
+        <button type="button" class="ghost" id="logout">退出登录</button>
+      </div>
     </header>
     <main>
       <section class="toolbar"><div><h1>穿透规则</h1><p>公网端口由 NAT 运行状态决定，不能指定或固定。</p></div><button id="newRule">添加规则</button></section>
@@ -29,7 +35,7 @@
           <label class="tcp-only advanced">TCP 保活服务器<input name="keepaliveServer" value="www.cloudflare.com:80"><small>TCP 规则须保持此连接，以维持 NAT 映射。</small></label>
           <label class="advanced">保活间隔（秒）<input name="interval" type="number" min="5" max="3600" value="10"></label>
           <label class="advanced">UDP STUN 检测周期<input name="checkEvery" type="number" min="1" max="3600" value="1"><small>每 N 次保活后重新探测映射。</small></label>
-          <label>转发模式<select name="mode" id="mode"><option value="forward">Lucky 内置转发</option><option value="bind">路由器直转（bind）</option></select></label>
+          <label>转发模式<select name="mode" id="mode"><option value="forward">本机代理转发（forward）</option><option value="bind">路由器直转（bind）</option></select></label>
           <label class="advanced">上级路由映射<select name="routerMapping"><option value="upnp" selected>UPnP IGD（默认）</option><option value="none">不使用</option><option value="nat-pmp">NAT-PMP</option></select><small>默认使用 UPnP，路由器须启用 UPnP IGD；运行在主路由上可选择“不使用”。</small></label>
           <label class="wide advanced">公网探针地址<input name="externalProbeUrl" placeholder="https://probe.example.com/probe"><small>部署在公网 VPS 的 STUNMap Probe。留空时仅使用本地 STUN/保活心跳。</small></label>
           <label class="advanced">公网探针令牌<input name="externalProbeToken" type="password" autocomplete="new-password"></label>

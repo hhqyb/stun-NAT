@@ -25,7 +25,43 @@ test('requires HTTP basic authentication', async () => {
   assert.equal(response.status, 401);
 });
 
-test('creates, validates, and stops a Lucky-style STUN rule', async () => {
+test('serves a login page and authenticates browser sessions with cookies', async () => {
+  const navigation = await fetch(`http://127.0.0.1:${port}/`, { redirect: 'manual', headers: { accept: 'text/html' } });
+  assert.equal(navigation.status, 303);
+  assert.equal(navigation.headers.get('location'), '/login.html?next=%2F');
+  const loginPage = await fetch(`http://127.0.0.1:${port}/login.html`);
+  assert.equal(loginPage.status, 200);
+  assert.match(loginPage.headers.get('content-security-policy') || '', /default-src 'self'/);
+  assert.match(await loginPage.text(), /登录控制台/);
+
+  const denied = await fetch(`http://127.0.0.1:${port}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'wrong-password' }) });
+  assert.equal(denied.status, 401);
+
+  const login = await fetch(`http://127.0.0.1:${port}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'test-password' }) });
+  assert.equal(login.status, 200);
+  const setCookie = login.headers.get('set-cookie');
+  assert.match(setCookie, /^stunmap_session=[\w-]+;/);
+  assert.match(setCookie, /HttpOnly/);
+  assert.match(setCookie, /SameSite=Strict/);
+  const cookie = setCookie.split(';')[0];
+
+  const list = await fetch(`http://127.0.0.1:${port}/api/rules`, { headers: { cookie } });
+  assert.equal(list.status, 200);
+  const session = await fetch(`http://127.0.0.1:${port}/api/auth/session`, { headers: { cookie } });
+  assert.deepEqual(await session.json(), { username: 'admin' });
+
+  const loginRedirect = await fetch(`http://127.0.0.1:${port}/login.html`, { redirect: 'manual', headers: { cookie } });
+  assert.equal(loginRedirect.status, 303);
+  assert.equal(loginRedirect.headers.get('location'), '/');
+
+  const logout = await fetch(`http://127.0.0.1:${port}/api/auth/logout`, { method: 'POST', headers: { cookie } });
+  assert.equal(logout.status, 204);
+  assert.match(logout.headers.get('set-cookie'), /Max-Age=0/);
+  const expired = await fetch(`http://127.0.0.1:${port}/api/rules`, { headers: { cookie } });
+  assert.equal(expired.status, 401);
+});
+
+test('creates, validates, and stops a STUN forwarding rule', async () => {
   const body = { name: 'web', enabled: false, protocol: 'tcp', bindPort: 0, stunServer: 'turn.cloudflare.com:3478', keepaliveServer: 'www.cloudflare.com:80', interval: 30, checkEvery: 10, mode: 'forward', targetHost: '192.168.1.20', targetPort: 443, routerMapping: 'upnp', firewallNote: 'WAN allowed' };
   const created = await request('/api/rules', { method: 'POST', body: JSON.stringify(body) });
   assert.equal(created.status, 201); const rule = (await created.json()).rule;
@@ -82,4 +118,14 @@ test('API and persisted logs have stable IDs and explicit UTC+8 timestamps', asy
   }
   const log = await fs.readFile(path.join(directory, 'logs', `${rule.id}.log`), 'utf8');
   assert.match(log, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}\+08:00 /);
+});
+
+test('throttles repeated login failures', async () => {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const response = await fetch(`http://127.0.0.1:${port}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: `wrong-${attempt}` }) });
+    assert.equal(response.status, 401);
+  }
+  const blocked = await fetch(`http://127.0.0.1:${port}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'test-password' }) });
+  assert.equal(blocked.status, 429);
+  assert.ok(Number(blocked.headers.get('retry-after')) > 0);
 });

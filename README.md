@@ -6,11 +6,11 @@
 
 ## 功能
 
-- Web 管理页面、HTTP Basic Auth 和规则 REST API。
+- Web 管理页面、会话登录、HTTP Basic Auth 和规则 REST API。
 - 多条 IPv4 TCP / UDP 穿透规则。
 - 通道监听端口支持固定值或 `0` 随机分配。
 - TCP 使用同源端口保活连接和 STUN TCP 探测；UDP 持续保活并周期性探测。
-- Lucky 内置转发模式：TCP/UDP 流量转发到 `目标地址:目标端口`。
+- 本机代理转发模式：由本机 NATMap 进程将 TCP/UDP 流量转发到 `目标地址:目标端口`。
 - bind 直转模式：只建立 NAT 映射；由路由器端口转发直接指向目标设备，可保留真实访问者 IP。
 - 默认使用 UPnP IGD 自动上级路由映射，可手动选择 NAT-PMP 或不使用；已有规则的显式选择保持不变。
 - Linux `iptables` 自动放行通道端口（每条规则可选）。
@@ -20,6 +20,7 @@
 - 默认每 10 秒进行一次 STUN/保活心跳；连续缺失心跳会自动重建映射。
 - 可选独立公网探针：TCP 验证通道握手，UDP 验证映射引擎健康回显；两者均不依赖目标服务是否启动。
 - 映射成功或公网端点变化后，可调用指定 GET 或 POST Webhook；保活心跳不会重复触发。
+- 登录页与控制台顶栏显示当前版本号（`v1.00`）。
 
 映射核心使用 [NATMap](https://github.com/heiher/natmap) 的 MIT 许可实现，管理服务、规则存储、路由映射适配和界面为本项目独立编写。UPnP 是本项目的上级路由映射方式，不是 STUN/流量转发引擎；默认选择 UPnP 不等于停用底层 NATMap 引擎。
 
@@ -35,9 +36,16 @@ export STUNMAP_ADMIN_PASSWORD='use-a-long-random-password'
 docker compose up -d --build
 ```
 
-访问 `http://设备地址:16888`，使用上面的账号密码登录。
+访问 `http://设备地址:16888`，在登录页使用上面的账号密码登录。
 
-首次建议创建一条 TCP 内置转发规则：
+## 认证与会话
+
+- 未登录访问管理页面会跳转到内置登录页；登录成功后签发 `HttpOnly`、`SameSite=Strict` 的会话 Cookie，有效期 12 小时。会话保存在内存中，服务重启后需重新登录。
+- 同一来源连续输错 5 次密码会暂时锁定 5 分钟，成功登录后计数清零。
+- 脚本或 API 客户端仍可使用 HTTP Basic Auth，凭据与登录页一致。
+- 管理页面带 CSP，页面与 API 均返回 `X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff` 等安全响应头；通过反向代理启用 HTTPS 且传递 `X-Forwarded-Proto: https` 时，会话 Cookie 自动附带 `Secure`。
+
+首次建议创建一条 TCP 本机代理转发规则：
 
 | 字段 | 示例 |
 | --- | --- |
@@ -45,7 +53,7 @@ docker compose up -d --build
 | 通道监听端口 | `0`（随机）或未被占用的高端口 |
 | STUN 服务器 | `turn.cloudflare.com:3478` |
 | TCP 保活服务器 | `www.cloudflare.com:80` |
-| 转发模式 | `Lucky 内置转发` |
+| 转发模式 | `本机代理转发` |
 | 上级路由映射 | `UPnP IGD`（默认，路由器需启用 UPnP） |
 | 目标地址 / 端口 | `192.168.1.20` / `443` |
 
@@ -84,7 +92,7 @@ docker compose -f docker-compose.probe.yml up -d --build
 1. 光猫拨号时，光猫 DMZ 应指向主路由。
 2. 优先在主路由运行，此时可将上级路由映射设为“不使用”。若运行在局域网设备，新规则默认使用 UPnP；也可选择 NAT-PMP，或手动将通道监听端口转发到该设备。
 3. 放行设备防火墙上的通道监听端口。
-4. UDP 规则不支持 bind 直转，必须使用内置转发。
+4. UDP 规则不支持 bind 直转，必须使用本机代理转发。
 5. TCP bind 直转须在路由器上将通道监听端口转发到目标设备/端口。
 
 ## 映射后无法访问的排查顺序

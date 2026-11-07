@@ -1,22 +1,49 @@
 import { LogViewer } from './log-view.js';
+import { APP_VERSION } from './version.js';
 
 const rulesEl = document.querySelector('#rules');
 const emptyEl = document.querySelector('#empty');
 const editor = document.querySelector('#editor');
 const form = document.querySelector('#ruleForm');
 const template = document.querySelector('#ruleTemplate');
+document.querySelector('#version').textContent = APP_VERSION;
 const cards = new Map();
 let rules = [];
 let loadSequence = 0;
+let redirecting = false;
+
+class ApiError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function goToLogin() {
+  if (redirecting) return;
+  redirecting = true;
+  location.replace(`/login.html?next=${encodeURIComponent(location.pathname + location.search)}`);
+}
 
 async function api(url, options = {}) {
   const endpoint = new URL(url, `${location.protocol}//${location.host}`);
   const response = await fetch(endpoint, { ...options, headers: { 'content-type': 'application/json', ...(options.headers || {}) } });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(body.error || `请求失败：${response.status}`);
+    if (response.status === 401) goToLogin();
+    throw new ApiError(body.error || `请求失败：${response.status}`, response.status);
   }
   return response.status === 204 ? null : response.json();
+}
+
+async function loadSession() {
+  try {
+    const session = await api('/api/auth/session');
+    if (!session?.username) return;
+    const user = document.querySelector('#user');
+    user.textContent = session.username;
+    user.hidden = false;
+  } catch {}
 }
 
 function setMode() {
@@ -106,7 +133,7 @@ function render() {
     // Do not detach unchanged cards: details, scroll, keyboard focus and selected text survive.
     if (rulesEl.children[index] !== node) rulesEl.insertBefore(node, rulesEl.children[index] || null);
     setText(node.querySelector('.name'), rule.name);
-    setText(node.querySelector('.meta'), `${rule.protocol.toUpperCase()} · ${rule.mode === 'forward' ? '内置转发' : '路由器直转'} · 本地通道 ${rule.bindPort || '随机'}`);
+    setText(node.querySelector('.meta'), `${rule.protocol.toUpperCase()} · ${rule.mode === 'forward' ? '本机代理转发' : '路由器直转'} · 本地通道 ${rule.bindPort || '随机'}`);
     const mapping = node.querySelector('.mapping');
     setText(mapping, rule.state?.publicAddress ? `公网映射  ${rule.state.publicAddress}:${rule.state.publicPort}` : rule.running ? '正在建立 STUN 映射…' : '规则未运行');
     mapping.classList.toggle('offline', !rule.state?.publicAddress);
@@ -125,7 +152,10 @@ async function load() {
     if (sequence !== loadSequence) return;
     rules = result.rules;
     render();
-  } catch (error) { if (sequence === loadSequence) setText(document.querySelector('#summary'), error.message); }
+  } catch (error) {
+    if (error.status === 401) return;
+    if (sequence === loadSequence) setText(document.querySelector('#summary'), error.message);
+  }
 }
 
 function openEditor(rule = null) {
@@ -176,5 +206,11 @@ form.addEventListener('submit', async (event) => {
     await load();
   } catch (error) { alert(error.message); }
 });
+document.querySelector('#logout').addEventListener('click', async (event) => {
+  event.currentTarget.disabled = true;
+  try { await api('/api/auth/logout', { method: 'POST' }); } catch {}
+  location.replace('/login.html');
+});
+loadSession();
 load();
 setInterval(load, 5000);

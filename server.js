@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { createRouterMapper, RouterMappingTask } from './lib/router-mapping.js';
 import { RotatingLogStore, MAX_LOG_BYTES } from './lib/log-store.js';
+import { createAuth } from './lib/auth.js';
 import { formatLogTime } from './public/log-time.js';
+import { APP_VERSION } from './public/version.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.STUNMAP_DATA_DIR || path.join(root, 'data');
@@ -20,6 +22,9 @@ const stateDir = path.join(dataDir, 'state');
 const logDir = path.join(dataDir, 'logs');
 const runners = new Map();
 const mapRouter = createRouterMapper();
+const auth = createAuth({ username: adminUser, password: adminPassword });
+const publicFiles = new Set(['/login.html', '/login.js', '/login.css', '/app.css', '/version.js', '/favicon.svg']);
+const contentSecurityPolicy = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 let logStore;
 
 if (process.env.NODE_ENV === 'production' && adminPassword === 'change-me-before-deploying') throw new Error('生产环境必须设置 STUNMAP_ADMIN_PASSWORD');
@@ -29,16 +34,30 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-function basicAuth(req, res) {
-  const value = req.headers.authorization || '';
-  const encoded = value.startsWith('Basic ') ? value.slice(6) : '';
-  const expected = Buffer.from(`${adminUser}:${adminPassword}`).toString('base64');
-  const sameLength = encoded.length === expected.length;
-  const valid = sameLength && crypto.timingSafeEqual(Buffer.from(encoded), Buffer.from(expected));
-  if (valid) return true;
-  res.writeHead(401, { 'www-authenticate': 'Basic realm="STUN-NAT Console"' });
-  res.end('Authentication required');
-  return false;
+function securityHeaders(res) {
+  res.setHeader('x-content-type-options', 'nosniff');
+  res.setHeader('x-frame-options', 'DENY');
+  res.setHeader('referrer-policy', 'same-origin');
+}
+
+function requestIsSecure(req) {
+  return Boolean(req.socket.encrypted) || String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase() === 'https';
+}
+
+function authenticate(req) {
+  if (auth.verifyBasic(req.headers.authorization)) return { mode: 'basic', username: adminUser };
+  const token = auth.parseCookies(req.headers.cookie)[auth.COOKIE_NAME];
+  return auth.readSession(token) ? { mode: 'session', username: adminUser } : null;
+}
+
+function sameOrigin(req) {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  const forwardedHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+  try {
+    const host = new URL(origin).host;
+    return host === req.headers.host || (Boolean(forwardedHost) && host === forwardedHost);
+  } catch { return false; }
 }
 
 async function ensureStorage() {
@@ -148,8 +167,8 @@ function validateRule(input, existing = {}) {
     try { JSON.parse(renderWebhookJsonTemplate(rule.webhookBody, webhookTestVariables)); } catch (error) { throw new Error(`Webhook POST JSON 模板无效：${error.message}`); }
   }
   if (!['forward', 'bind'].includes(rule.mode)) throw new Error('模式只能是 forward 或 bind');
-  if (rule.protocol === 'udp' && rule.mode === 'bind') throw new Error('UDP 穿透不支持 bind 直转模式，必须使用内置转发');
-  if (rule.mode === 'forward' && (!rule.targetHost || !Number.isInteger(rule.targetPort) || rule.targetPort < 1 || rule.targetPort > 65535)) throw new Error('内置转发必须填写目标地址和目标端口');
+  if (rule.protocol === 'udp' && rule.mode === 'bind') throw new Error('UDP 穿透不支持 bind 直转模式，必须使用本机代理转发');
+  if (rule.mode === 'forward' && (!rule.targetHost || !Number.isInteger(rule.targetPort) || rule.targetPort < 1 || rule.targetPort > 65535)) throw new Error('本机代理转发必须填写目标地址和目标端口');
   if (!['none', 'nat-pmp', 'upnp'].includes(rule.routerMapping)) throw new Error('路由映射类型无效');
   return rule;
 }
@@ -307,14 +326,57 @@ async function parseBody(req) {
 }
 
 function staticFile(res, pathname) {
-  const target = pathname === '/' ? '/index.html' : pathname; const file = path.resolve(root, 'public', `.${target}`); if (!file.startsWith(path.join(root, 'public'))) return json(res, 403, { error: 'forbidden' });
-  fs.readFile(file, (error, data) => { if (error) return json(res, 404, { error: 'not found' }); const contentType = file.endsWith('.css') ? 'text/css' : file.endsWith('.js') ? 'application/javascript' : 'text/html'; res.writeHead(200, { 'content-type': `${contentType}; charset=utf-8` }); res.end(data); });
+  const target = pathname === '/' ? '/index.html' : pathname;
+  const publicRoot = path.join(root, 'public');
+  const file = path.resolve(publicRoot, `.${target}`);
+  if (file !== publicRoot && !file.startsWith(`${publicRoot}${path.sep}`)) return json(res, 403, { error: 'forbidden' });
+  fs.readFile(file, (error, data) => {
+    if (error) return json(res, 404, { error: 'not found' });
+    const contentType = file.endsWith('.css') ? 'text/css; charset=utf-8'
+      : file.endsWith('.js') ? 'application/javascript; charset=utf-8'
+        : file.endsWith('.svg') ? 'image/svg+xml'
+          : file.endsWith('.ico') ? 'image/x-icon'
+            : 'text/html; charset=utf-8';
+    const headers = { 'content-type': contentType, 'cache-control': 'no-cache' };
+    if (contentType.startsWith('text/html')) headers['content-security-policy'] = contentSecurityPolicy;
+    res.writeHead(200, headers);
+    res.end(data);
+  });
 }
 
 const server = http.createServer(async (req, res) => {
-  if (!basicAuth(req, res)) return;
+  securityHeaders(res);
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`); const match = url.pathname.match(/^\/api\/rules\/([0-9a-f-]+)(?:\/(start|stop))?$/);
   try {
+    if (req.method === 'POST' && url.pathname === '/api/auth/login') {
+      const address = req.socket.remoteAddress || 'unknown';
+      const retryAfter = auth.blockedFor(address);
+      if (retryAfter) { res.setHeader('retry-after', String(retryAfter)); return json(res, 429, { error: `登录尝试次数过多，请 ${retryAfter} 秒后再试` }); }
+      const body = await parseBody(req);
+      if (!auth.verifyCredentials(body?.username, body?.password)) {
+        auth.recordFailure(address);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        return json(res, 401, { error: '账号或密码不正确' });
+      }
+      auth.resetFailures(address);
+      res.setHeader('set-cookie', auth.sessionCookie(auth.createSession(), { secure: requestIsSecure(req) }));
+      return json(res, 200, { username: adminUser });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/auth/logout') {
+      auth.destroySession(auth.parseCookies(req.headers.cookie)[auth.COOKIE_NAME]);
+      res.setHeader('set-cookie', auth.clearCookie({ secure: requestIsSecure(req) }));
+      return json(res, 204, {});
+    }
+    const session = authenticate(req);
+    if (!session) {
+      if (url.pathname.startsWith('/api/')) return json(res, 401, { error: '未登录或会话已过期' });
+      if (publicFiles.has(url.pathname)) return staticFile(res, url.pathname);
+      if (req.method === 'GET' && String(req.headers.accept || '').includes('text/html')) { res.writeHead(303, { location: `/login.html?next=${encodeURIComponent(url.pathname + url.search)}` }); return res.end(); }
+      return json(res, 401, { error: 'Authentication required' });
+    }
+    if (session.mode === 'session' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !sameOrigin(req)) return json(res, 403, { error: '请求来源无效' });
+    if (req.method === 'GET' && url.pathname === '/api/auth/session') return json(res, 200, { username: session.username });
+    if (url.pathname === '/login.html') { res.writeHead(303, { location: '/' }); return res.end(); }
     if (req.method === 'GET' && url.pathname === '/api/rules') { const { rules } = await loadDatabase(); const output = await Promise.all(rules.map(async (rule) => { const runner = runners.get(rule.id); return runner ? runner.snapshot(await readRuleState(rule.id)) : { ...rule, running: false, state: await readRuleState(rule.id), logs: [] }; })); return json(res, 200, { rules: output }); }
     if (req.method === 'POST' && url.pathname === '/api/rules') { const body = await parseBody(req); const database = await loadDatabase(); const rule = validateRule(body); if (database.rules.some((item) => item.name === rule.name)) throw new Error('规则名称已存在'); database.rules.push(rule); await saveDatabase(database); await refreshRunners(); return json(res, 201, { rule }); }
     if (match && req.method === 'PUT' && !match[2]) { const body = await parseBody(req); const database = await loadDatabase(); const index = database.rules.findIndex((rule) => rule.id === match[1]); if (index < 0) return json(res, 404, { error: '规则不存在' }); database.rules[index] = validateRule(body, database.rules[index]); await saveDatabase(database); const runner = runners.get(match[1]); runner?.stop(); await refreshRunners(); return json(res, 200, { rule: database.rules[index] }); }
@@ -325,5 +387,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 await ensureStorage(); await refreshRunners(); setInterval(() => reconcileRouterMappings().catch((error) => console.error('规则状态更新失败：', error.message)), 1000).unref();
-server.listen(port, '0.0.0.0', () => console.log(`STUN-NAT Console listening on :${port}`));
+setInterval(() => auth.cleanup(), 10 * 60 * 1000).unref();
+server.listen(port, '0.0.0.0', () => console.log(`STUN-NAT Console ${APP_VERSION} listening on :${port}`));
 process.on('SIGTERM', () => { for (const runner of runners.values()) runner.stop(); server.close(() => process.exit(0)); });
