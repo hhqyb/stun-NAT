@@ -1,5 +1,7 @@
 # STUN-NAT
 
+[![Publish Docker image](https://github.com/hhqyb/stun-NAT/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/hhqyb/stun-NAT/actions/workflows/docker-publish.yml)
+
 独立的 STUN 内网穿透管理系统，按 Lucky 的 STUN 模块工作方式实现：在一台设备上维持 TCP 或 UDP 的 NAT 映射，获得动态公网端口，再将流量转发到指定内网服务，或交由路由器直转。
 
 它不是双节点 P2P 打洞系统，也不提供中继服务。映射是否可用取决于运营商和每一层 NAT 是否为 NAT1（全锥形）。公网端口不可指定，变化周期也无法保证。
@@ -37,6 +39,23 @@ docker compose up -d --build
 ```
 
 访问 `http://设备地址:16888`，在登录页使用上面的账号密码登录。
+
+## Docker 镜像自动构建
+
+`.github/workflows/docker-publish.yml` 会在推送到 `main`、推送 `v*` 标签或手动触发时，构建 `linux/amd64` 与 `linux/arm64` 镜像并推送到 GitHub Container Registry（GHCR）：
+
+```sh
+docker pull ghcr.io/hhqyb/stun-nat:latest
+```
+
+镜像同时带有 `main`、Git 标签和 `sha-<短提交>` 标签；`latest` 仅在默认分支更新。构建使用仓库自带的 `GITHUB_TOKEN`，不需要额外 Secret。
+
+首次启用时请确认两项 GitHub 设置：
+
+1. **Actions 权限**：仓库 `Settings → Actions → General → Workflow permissions` 选择 `Read and write permissions`，否则推送 GHCR 会返回 403。
+2. **镜像可见性**：首次构建完成后，在仓库的 `Packages` 中把 `stun-nat` 设为 `Public`；保持私有则需要先执行 `docker login ghcr.io` 才能拉取。
+
+如需改用 Docker Hub，在仓库 Secrets 中添加 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`，并替换工作流中的登录方式与镜像地址。
 
 ## 认证与会话
 
