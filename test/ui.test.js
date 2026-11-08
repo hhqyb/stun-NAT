@@ -103,14 +103,12 @@ test('browser: UPnP defaults, UTC+8 and stable log reading through polling', { s
 
   await t.test('new editor defaults to UPnP, while an explicit existing none remains none', async () => {
     assert.equal(await evaluate("document.querySelector('#newRule').click(); document.querySelector('[name=routerMapping]').value"), 'upnp');
-    assert.deepEqual(await evaluate("document.querySelector('#ruleTemplate').value = 'game'; document.querySelector('#ruleTemplate').dispatchEvent(new Event('change')); ({ protocol: document.querySelector('[name=protocol]').value, port: document.querySelector('[name=targetPort]').value, mode: document.querySelector('[name=mode]').value })"), { protocol: 'udp', port: '25565', mode: 'forward' });
-    assert.equal(await evaluate("document.querySelector('#closeEditor').click(); document.querySelector('.edit').click(); document.querySelector('#templateField').classList.contains('hidden')"), true);
-    assert.equal(await evaluate("document.querySelector('[name=routerMapping]').value"), 'none');
+    assert.equal(await evaluate("document.querySelector('#closeEditor').click(); document.querySelector('.edit').click(); document.querySelector('[name=routerMapping]').value"), 'none');
     await evaluate("document.querySelector('#closeEditor').click()");
   });
 
   await t.test('copy prefills a new rule with a new name', async () => {
-    assert.deepEqual(await evaluate("document.querySelector('.copy').click(); ({ id: document.querySelector('[name=id]').value, name: document.querySelector('[name=name]').value, template: document.querySelector('#templateField').classList.contains('hidden') })"), { id: '', name: 'First 副本', template: false });
+    assert.deepEqual(await evaluate("document.querySelector('.copy').click(); ({ id: document.querySelector('[name=id]').value, name: document.querySelector('[name=name]').value })"), { id: '', name: 'First 副本' });
     await evaluate("document.querySelector('#closeEditor').click()");
   });
 

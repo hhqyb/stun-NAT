@@ -32,7 +32,6 @@
             <legend>基础</legend>
             <div class="section-grid">
               <label>规则名称<input name="name" required maxlength="80" placeholder="例如：家庭 Web 服务"></label>
-              <label id="templateField">规则模板<select id="ruleTemplate"><option value="">不使用模板</option><option value="web">Web 服务（TCP 443）</option><option value="nas">NAS 管理（TCP 5000）</option><option value="ssh">SSH（TCP 22）</option><option value="game">游戏联机（UDP 25565）</option></select><small>仅用于新规则，选择后自动填入推荐参数。</small></label>
               <label>操作模式<select id="viewMode"><option value="simple">简易模式</option><option value="advanced">定制模式</option></select><small>简易模式采用推荐参数；定制模式显示全部选项。</small></label>
               <label>穿透类型<select name="protocol"><option value="tcp">IPv4 TCP</option><option value="udp">IPv4 UDP</option></select></label>
               <label>通道监听端口<input name="bindPort" type="number" min="0" max="65535" value="0"><small>填 0 时自动选择随机端口；局域网内应避免冲突。</small></label>

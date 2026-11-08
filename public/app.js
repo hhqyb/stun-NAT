@@ -100,24 +100,6 @@ function setMode() {
   document.querySelector('.webhook-body').classList.toggle('hidden', !advanced || form.webhookMethod.value !== 'post');
 }
 
-const ruleTemplates = {
-  web: { protocol: 'tcp', targetPort: 443, checkEvery: 1 },
-  nas: { protocol: 'tcp', targetPort: 5000, checkEvery: 1 },
-  ssh: { protocol: 'tcp', targetPort: 22, checkEvery: 1 },
-  game: { protocol: 'udp', targetPort: 25565, checkEvery: 2 }
-};
-
-function applyRuleTemplate(name) {
-  const template = ruleTemplates[name];
-  if (!template) return;
-  form.protocol.value = template.protocol;
-  form.mode.value = 'forward';
-  form.targetPort.value = template.targetPort;
-  form.checkEvery.value = template.checkEvery;
-  form.routerMapping.value = 'upnp';
-  setMode();
-}
-
 const webhookPresets = {
   duckdns: { url: 'https://www.duckdns.org/update?domains=YOUR_DOMAIN&token=YOUR_TOKEN&ip={{STUN_PUBLIC_IP}}', method: 'get', body: '', headers: '' },
   telegram: { url: 'https://api.telegram.org/botYOUR_BOT_TOKEN/sendMessage', method: 'post', body: '{"chat_id":"YOUR_CHAT_ID","text":"STUN-NAT {{STUN_RULE_NAME}} -> {{STUN_PUBLIC_ADDR}}"}', headers: '' },
@@ -362,8 +344,6 @@ async function load() {
 
 function openEditor(rule = null) {
   form.reset();
-  document.querySelector('#ruleTemplate').value = '';
-  document.querySelector('#templateField').classList.toggle('hidden', Boolean(rule?.id));
   document.querySelector('#webhookResult').hidden = true;
   document.querySelector('#webhookPreset').value = '';
   form.id.value = rule?.id || '';
@@ -412,7 +392,6 @@ document.querySelector('#importFile').addEventListener('change', async (event) =
   } catch (error) { notify(error.message); }
   finally { input.value = ''; }
 });
-document.querySelector('#ruleTemplate').addEventListener('change', (event) => applyRuleTemplate(event.target.value));
 document.querySelector('#webhookPreset').addEventListener('change', (event) => applyWebhookPreset(event.target.value));
 document.querySelector('#filesClose').addEventListener('click', () => filesDialog.close());
 document.querySelector('#security').addEventListener('click', openSecurity);
