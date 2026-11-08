@@ -126,7 +126,7 @@ test('UPnP cleanup enumerates the table and deletes only matching descriptions',
     { description: 'STUN-NAT game', externalPort: '40002', protocol: 'UDP' }
   ];
   const deleted = [];
-  const client = new UpnpClient({ discover: async () => 'http://192.168.10.1/igd.xml', request: async (url, options) => {
+  const client = new UpnpClient({ cleanupDelayMs: 0, discover: async () => 'http://192.168.10.1/igd.xml', request: async (url, options) => {
     if (options.method !== 'POST') return { status: 200, text: description };
     const action = actionOf(options);
     if (action === 'GetGenericPortMappingEntry') {
@@ -150,6 +150,46 @@ test('UPnP cleanup enumerates the table and deletes only matching descriptions',
   assert.deepEqual(deleted, ['TCP:40000', 'UDP:40002']);
 });
 
+test('UPnP cleanup retries a reset enumeration request once', async () => {
+  let entries = [
+    { description: 'tailscale', externalPort: '41641', protocol: 'UDP' },
+    { description: 'STUN-NAT web', externalPort: '40000', protocol: 'TCP' }
+  ];
+  let resets = 0;
+  const client = new UpnpClient({ cleanupDelayMs: 0, discover: async () => 'http://192.168.10.1/igd.xml', request: async (url, options) => {
+    if (options.method !== 'POST') return { status: 200, text: description };
+    const action = actionOf(options);
+    if (action === 'GetGenericPortMappingEntry') {
+      const index = Number(options.body.match(/<NewPortMappingIndex>(\d+)<\/NewPortMappingIndex>/)?.[1]);
+      if (index === 1 && resets === 0) { resets++; throw new Error('socket reset'); }
+      if (index >= entries.length) return fault(713, 'SpecifiedArrayIndexInvalid');
+      const entry = entries[index];
+      return { status: 200, text: `<NewExternalPort>${entry.externalPort}</NewExternalPort><NewProtocol>${entry.protocol}</NewProtocol><NewPortMappingDescription>${entry.description}</NewPortMappingDescription>` };
+    }
+    if (action === 'DeletePortMapping') {
+      const externalPort = options.body.match(/<NewExternalPort>(\d+)<\/NewExternalPort>/)?.[1];
+      const protocol = options.body.match(/<NewProtocol>([^<]+)<\/NewProtocol>/)?.[1];
+      entries = entries.filter((entry) => !(entry.externalPort === externalPort && entry.protocol === protocol));
+      return { status: 200, text: '' };
+    }
+    throw new Error(`unexpected action ${action}`);
+  } });
+  const result = await client.cleanup({ privateAddress: input.privateAddress, prefix: 'STUN-NAT ' });
+  assert.deepEqual(result, { scanned: 2, deleted: 1, failed: 0, warning: '' });
+  assert.equal(resets, 1);
+});
+
+test('UPnP cleanup returns partial results when enumeration keeps resetting', async () => {
+  const client = new UpnpClient({ cleanupDelayMs: 0, discover: async () => 'http://192.168.10.1/igd.xml', request: async (url, options) => {
+    if (options.method !== 'POST') return { status: 200, text: description };
+    throw new Error('socket reset');
+  } });
+  const result = await client.cleanup({ privateAddress: input.privateAddress, prefix: 'STUN-NAT ' });
+  assert.equal(result.scanned, 0);
+  assert.equal(result.deleted, 0);
+  assert.match(result.warning, /索引 0.*socket reset/);
+});
+
 test('UPnP remove deletes a mapping and treats a missing entry as already clean', async () => {
   let calls = 0;
   const client = new UpnpClient({ discover: async () => 'http://192.168.10.1/igd.xml', request: async (url, options) => {
@@ -170,6 +210,18 @@ test('HTTP deadline includes an unfinished response body and supports cancellati
   await assert.rejects(requestText(url, { localAddress: '127.0.0.1', timeoutMs: 30 }), /超时/);
   const controller = new AbortController(); const pending = requestText(url, { signal: controller.signal });
   controller.abort(); await assert.rejects(pending, { name: 'AbortError' });
+});
+
+test('UPnP HTTP requests use a fresh connection for each call', async (t) => {
+  let connections = 0; let requests = 0;
+  const server = http.createServer((req, res) => { requests++; res.writeHead(200, { 'content-type': 'text/xml' }); res.end('<ok/>'); });
+  server.on('connection', () => { connections++; });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const url = `http://127.0.0.1:${server.address().port}/igd.xml`;
+  await requestText(url); await requestText(url);
+  assert.equal(requests, 2);
+  assert.equal(connections, 2);
 });
 
 test('all rules share a single router queue, including after a failed operation', async () => {
